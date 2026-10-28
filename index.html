@@ -133,6 +133,18 @@ button { cursor: pointer; }
 .mk-catch { background: var(--catch); width: 28px; height: 28px; }
 .mk-catch .ic { width: 15px; height: 15px; }
 .mk-new { background: var(--text); }
+.map-panel { max-height: 42%; overflow-y: auto; }
+.icon-btn.on-accent { background: var(--accent); color: var(--on-accent); }
+.depth-legend { position: absolute; left: 12px; top: calc(env(safe-area-inset-top) + 60px); z-index: 500; display: flex; align-items: center; gap: 6px; background: var(--card); border-radius: 10px; padding: 5px 9px; font-size: 11px; color: var(--muted); box-shadow: var(--shadow); }
+.depth-legend[hidden] { display: none; }
+.depth-legend i { width: 56px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, #b6edf0, #8dc8eb, #5aa2e6, #2f5fb3); }
+.find-btn { position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 550; border: 0; border-radius: 999px; padding: 12px 20px; background: var(--accent); color: var(--on-accent); font-weight: 700; display: flex; gap: 8px; align-items: center; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+.map-panel:not([hidden]) ~ .find-btn { display: none; }
+.mk-pred { width: 30px; height: 30px; background: #e8432e; font-weight: 800; font-size: 15px; }
+.pred-list { display: grid; gap: 6px; margin-top: 10px; }
+.pred-item { display: flex; gap: 10px; align-items: flex-start; text-align: left; border: 0; background: var(--card2); border-radius: 12px; padding: 9px 10px; font-size: 14px; }
+.pred-num { width: 24px; height: 24px; border-radius: 50%; background: #e8432e; color: #fff; font-weight: 800; display: grid; place-items: center; flex: none; font-size: 13px; }
+.pred-select { border: 1px solid var(--line); border-radius: 10px; background: var(--bg); padding: 6px 8px; font-size: 14px; max-width: 55%; }
 .leaflet-container { font: inherit; }
 .leaflet-control-attribution { font-size: 9px; }
 @media (prefers-color-scheme: dark) { .leaflet-control-attribution { background: rgba(20,33,40,.8) !important; color: #90a4aa; } .leaflet-control-attribution a { color: #3cb6c0; } }
@@ -194,8 +206,11 @@ button { cursor: pointer; }
   <div class="map-tools">
     <button class="icon-btn" data-action="map-locate" aria-label="My location"></button>
     <button class="icon-btn" data-action="map-layers" aria-label="Satellite"></button>
+    <button class="icon-btn" data-action="map-depth" aria-label="Depth map"></button>
   </div>
+  <div class="depth-legend" id="depth-legend" hidden><span>Depth</span><i></i><span>shallow → deep</span></div>
   <div class="map-panel" id="map-panel" hidden></div>
+  <button class="find-btn" data-action="find-spots"></button>
 </section>
 
 <section id="view-catches" class="view" aria-label="Catches"></section>

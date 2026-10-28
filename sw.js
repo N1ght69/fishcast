@@ -1,5 +1,5 @@
 /* FishCast service worker: app works offline; map tiles you've viewed are cached. */
-const CACHE = 'fishcast-v1';
+const CACHE = 'fishcast-v2';
 const TILES = 'fishcast-tiles';
 const MAX_TILES = 3000;
 const SHELL = [
@@ -39,7 +39,8 @@ self.addEventListener('fetch', e => {
   }
 
   // Map tiles: cache first.
-  if (url.hostname === 'tile.openstreetmap.org' || url.hostname === 'server.arcgisonline.com') {
+  const depthTile = url.hostname === 'www.geoportal.lt' && url.pathname.endsWith('/export');
+  if (url.hostname === 'tile.openstreetmap.org' || url.hostname === 'server.arcgisonline.com' || depthTile) {
     e.respondWith(caches.open(TILES).then(async cache => {
       const hit = await cache.match(req);
       if (hit) return hit;

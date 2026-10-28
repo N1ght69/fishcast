@@ -28,6 +28,8 @@ const ICONS = {
   moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
   share: '<path d="M12 15V3M7 8l5-5 5 5"/><path d="M5 13v7h14v-7"/>',
   locoff: '<path d="M3 11 21 3l-8 18-2-8-8-2z"/><path d="M2 2l20 20"/>',
+  depth: '<path d="M2 7c2.5-2 4.5-2 7 0s4.5 2 7 0 4.5-2 6 0"/><path d="M2 12c2.5-2 4.5-2 7 0s4.5 2 7 0 4.5-2 6 0"/><path d="M12 15v6M9 18l3 3 3-3"/>',
+  target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3"/>',
 };
 const icon = n => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n]}</svg>`;
 
@@ -85,7 +87,9 @@ const state = {
   loading: false, error: null,
   catches: [], spots: [],
   satellite: store.get('satellite', false),
+  depthOn: store.get('depthOn', true),
   detailId: null, sheetWater: 12, panelSpot: null,
+  pred: null, // last spot prediction
 };
 const target = () => state.picked || state.gps;
 
@@ -283,6 +287,9 @@ function renderForecast() {
       <dt>Clouds</dt><dd>${pct(p.w.cloud)}</dd>
       <dt>Rain</dt><dd>${p.w.rain.toFixed(1)} mm/h</dd></dl></div>`;
 
+    h += `<div class="card row"><div style="flex:1"><h2 style="margin:0 0 2px">Where to fish</h2><div class="small muted">Best spots on a lake for ${esc(sp.name.toLowerCase())} from depth, drop-offs and wind</div></div>
+      <button class="btn primary" data-action="go-spots">Map</button></div>`;
+
     h += `<p class="small muted">Bite chance is a science-based estimate from water temperature, light, pressure trend, wind, rain and moon periods. It is not a count of real catches. Weather: Open-Meteo.</p>`;
   }
   h += '</div>';
@@ -312,9 +319,24 @@ function pickLocation(lat, lon, name) {
 }
 
 // ---------- map ----------
-let map = null, tiles = {}, spotLayer, catchLayer, meMarker = null, pendingMarker = null, pendingLatLng = null;
+let map = null, tiles = {}, spotLayer, catchLayer, predLayer, depthLayer, meMarker = null, pendingMarker = null, pendingLatLng = null;
 
 const divIcon = (cls, ic, size) => L.divIcon({ className: '', html: `<div class="mk ${cls}">${icon(ic)}</div>`, iconSize: [size, size], iconAnchor: [size / 2, size / 2] });
+
+/** Depth bands + depth contours rendered by the geoportal.lt map service, one image per map tile. */
+const DepthLayer = L.TileLayer.extend({
+  getTileUrl(c) {
+    const R = 20037508.342789244, size = 2 * R / Math.pow(2, c.z);
+    const minx = -R + c.x * size, maxy = R - c.y * size;
+    return BATHY_URL + '/export?' + new URLSearchParams({
+      bbox: [minx, maxy - size, minx + size, maxy].map(v => v.toFixed(2)).join(','),
+      bboxSR: '3857', imageSR: '3857', size: '512,512', dpi: '192',
+      format: 'png32', transparent: 'true', layers: 'show:0,2,3,4', f: 'image',
+    });
+  },
+});
+
+const inLithuania = (lat, lon) => lat > BATHY_BOUNDS[0][0] && lat < BATHY_BOUNDS[1][0] && lon > BATHY_BOUNDS[0][1] && lon < BATHY_BOUNDS[1][1];
 
 function showMap() {
   if (!map) {
@@ -322,6 +344,9 @@ function showMap() {
     tiles.std = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' });
     tiles.sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Imagery © Esri' });
     (state.satellite ? tiles.sat : tiles.std).addTo(map);
+    depthLayer = new DepthLayer('', { tileSize: 256, opacity: 0.85, minZoom: 9, maxZoom: 19, bounds: BATHY_BOUNDS, attribution: 'Depth © geoportal.lt' });
+    if (state.depthOn) depthLayer.addTo(map);
+    predLayer = L.layerGroup().addTo(map);
     spotLayer = L.layerGroup().addTo(map);
     catchLayer = L.layerGroup().addTo(map);
     const c = target();
@@ -329,8 +354,93 @@ function showMap() {
     map.on('click', e => setPending(e.latlng));
     renderMarkers();
     updateMe();
+    updateMapTools();
   }
   setTimeout(() => map.invalidateSize(), 60);
+}
+
+function updateMapTools() {
+  document.querySelector('[data-action="map-depth"]').classList.toggle('on-accent', state.depthOn);
+  $('#depth-legend').hidden = !state.depthOn;
+}
+
+const compass = deg => ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+const heatColor = s => s > 0.85 ? '#e8432e' : s > 0.72 ? '#f07a22' : '#f5b72e';
+
+/** Water temperature and wind to feed the spot predictor, for the map's current centre. */
+async function spotContext(lat, lon) {
+  let b = state.bundle;
+  const near = b && Math.hypot(b.lat - lat, (b.lon - lon) * Math.cos(lat * RAD)) < 0.3; // ~30 km
+  if (!near) b = await fetchWeather(lat, lon);
+  let water = estimatedWaterNow(b);
+  if (near && state.waterOverride != null) water = state.waterOverride;
+  const now = Date.now();
+  const h = b.hours.reduce((a, x) => (Math.abs(x.t - now) < Math.abs(a.t - now) ? x : a));
+  return { water, windDir: h.windDir ?? 0, windSpeed: h.wind, catches: state.catches };
+}
+
+async function findSpots() {
+  clearPending();
+  if (map.getZoom() < 12) { toast('Zoom in on one lake first'); return; }
+  const b = map.getBounds(), ctr = b.getCenter();
+  if (!inLithuania(ctr.lat, ctr.lng)) { panel(noDepthPanel()); return; }
+  panel(`<h3>Finding spots…</h3><div class="spinner" style="margin:12px auto"></div><div class="small muted" style="text-align:center">Reading lake depths</div>`);
+  let data, ctx;
+  try {
+    [data, ctx] = await Promise.all([
+      fetchDepthPolygons(b.getWest(), b.getSouth(), b.getEast(), b.getNorth()),
+      spotContext(ctr.lat, ctr.lng),
+    ]);
+  } catch {
+    panel(`<h3>Couldn't load depths</h3><div class="small muted">Check your connection and try again.</div><div class="btns"><button class="btn" data-action="panel-close">Close</button><button class="btn primary" data-action="find-spots">Retry</button></div>`);
+    return;
+  }
+  if (!data.bands.length) { panel(noDepthPanel()); return; }
+  const res = predictSpots(data, [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], state.species, ctx);
+  state.pred = { res, ctx, species: state.species, truncated: data.truncated };
+  drawPrediction();
+  showPredList();
+}
+
+function noDepthPanel() {
+  return `<h3>No depth map here</h3><div class="small muted">Free depth maps exist for about 300 Lithuanian lakes, ponds, the Kaunas and Curonian lagoons and the coast. Turn on the depth layer (wave button) to see which lakes have one, then zoom in on it.</div>
+    <div class="btns"><button class="btn" data-action="panel-close">Close</button></div>`;
+}
+
+function drawPrediction() {
+  predLayer.clearLayers();
+  const { res } = state.pred;
+  const half = res.cellM / 2;
+  for (const c of res.cells) {
+    if (c.score < 0.55) continue;
+    const dLat = half / 111320, dLon = half / (111320 * Math.cos(c.lat * RAD));
+    L.rectangle([[c.lat - dLat, c.lon - dLon], [c.lat + dLat, c.lon + dLon]],
+      { stroke: false, fillColor: heatColor(c.score), fillOpacity: 0.15 + 0.4 * (c.score - 0.55) / 0.45, interactive: false }).addTo(predLayer);
+  }
+  res.spots.forEach((s, i) => {
+    L.marker([s.lat, s.lon], { icon: L.divIcon({ className: '', html: `<div class="mk mk-pred">${i + 1}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] }), zIndexOffset: 500 })
+      .on('click', () => showPredSpot(i)).addTo(predLayer);
+  });
+}
+
+function showPredList() {
+  const { res, ctx, truncated } = state.pred;
+  const sel = `<select id="pred-species" class="pred-select">${Object.entries(SPECIES).map(([k, s]) => `<option value="${k}" ${k === state.species ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>`;
+  const head = `<div class="row" style="margin-bottom:4px"><h3 style="margin:0">Best spots</h3><span class="spacer"></span>${sel}</div>
+    <div class="small muted">Water ~${ctx.water.toFixed(0)}°C → aiming for ${res.range[0]}–${res.range[1]} m · wind ${compass(ctx.windDir)} ${Math.round(ctx.windSpeed)} km/h${truncated ? ' · zoom in for full detail' : ''}</div>`;
+  const list = res.spots.length
+    ? `<div class="pred-list">${res.spots.map((s, i) => `<button class="pred-item" data-action="pred-go" data-i="${i}"><span class="pred-num">${i + 1}</span><span><b>${esc(s.reasons[0])}</b>${s.reasons[1] ? `<br><span class="muted">${esc(s.reasons[1])}</span>` : ''}</span></button>`).join('')}</div>`
+    : `<p class="small muted">No water in view matches what ${esc(SPECIES[state.species].name.toLowerCase())} want right now. Try zooming out to the whole lake.</p>`;
+  panel(head + list + `<div class="btns"><button class="btn" data-action="pred-clear">Clear</button><button class="btn" data-action="panel-close">Hide</button></div>`);
+}
+
+function showPredSpot(i) {
+  const s = state.pred.res.spots[i];
+  state.predIdx = i;
+  panel(`<h3>Spot ${i + 1} · ${esc(SPECIES[state.pred.species].name)}</h3>
+    <ul class="reasons">${s.reasons.map(r => `<li><span class="dot good">+</span><span>${esc(r)}</span></li>`).join('')}</ul>
+    <div class="small muted" style="margin-top:8px">Score ${pct(s.score)} of the best water in view · ${s.lat.toFixed(4)}, ${s.lon.toFixed(4)}</div>
+    <div class="btns"><button class="btn" data-action="pred-back">List</button><button class="btn" data-action="pred-save">Save</button><button class="btn primary" data-action="pred-forecast">Forecast</button></div>`);
 }
 
 function renderMarkers() {
@@ -363,11 +473,18 @@ function setPending(ll) {
   pendingLatLng = ll;
   if (!pendingMarker) pendingMarker = L.marker(ll, { icon: divIcon('mk-new', 'plus', 34) }).addTo(map);
   else pendingMarker.setLatLng(ll);
+  const lt = inLithuania(ll.lat, ll.lng);
   panel(`<h3>New spot</h3>
     <input id="spot-name" placeholder="Spot name" maxlength="40" autocomplete="off"
       style="width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--bg);outline:none">
-    <div class="small muted" style="margin-top:6px">${ll.lat.toFixed(4)}, ${ll.lng.toFixed(4)} · tap the map to move the pin</div>
+    <div class="small muted" style="margin-top:6px">${lt ? '<span id="pin-depth">Depth: checking…</span> · ' : ''}${ll.lat.toFixed(4)}, ${ll.lng.toFixed(4)}</div>
     <div class="btns"><button class="btn" data-action="pin-cancel">Cancel</button><button class="btn" data-action="pin-forecast">Forecast</button><button class="btn primary" data-action="pin-save">Save</button></div>`);
+  if (lt) {
+    depthAtPoint(ll.lat, ll.lng).then(d => {
+      const el = $('#pin-depth');
+      if (el && pendingLatLng === ll) el.innerHTML = d == null ? 'No depth data here' : `Depth: <b>${d}+ m</b>`;
+    }).catch(() => { const el = $('#pin-depth'); if (el) el.textContent = 'Depth: unavailable offline'; });
+  }
 }
 
 function clearPending() {
@@ -697,6 +814,40 @@ const ACTIONS = {
     if (state.satellite) { tiles.std.remove(); tiles.sat.addTo(map); } else { tiles.sat.remove(); tiles.std.addTo(map); }
     toast(state.satellite ? 'Satellite view' : 'Map view');
   },
+  'map-depth': () => {
+    state.depthOn = !state.depthOn; store.set('depthOn', state.depthOn);
+    if (state.depthOn) depthLayer.addTo(map); else depthLayer.remove();
+    updateMapTools();
+    if (state.depthOn && map.getZoom() < 10) toast('Zoom in on a lake to see depths');
+  },
+  'find-spots': () => findSpots(),
+  'pred-go': a => {
+    const i = +a.dataset.i, s = state.pred.res.spots[i];
+    map.setView([s.lat, s.lon], Math.max(map.getZoom(), 15));
+    showPredSpot(i);
+  },
+  'pred-back': () => showPredList(),
+  'pred-clear': () => { predLayer.clearLayers(); state.pred = null; panel(null); },
+  'pred-save': async () => {
+    const i = state.predIdx, s = state.pred.res.spots[i];
+    const spot = { id: uid(), name: `${SPECIES[state.pred.species].name} spot ${i + 1}`, lat: s.lat, lon: s.lon, created: Date.now() };
+    await dbPut('spots', spot);
+    state.spots.push(spot); renderMarkers(); persistStorage();
+    toast('Saved as "' + spot.name + '"');
+  },
+  'pred-forecast': () => {
+    const s = state.pred.res.spots[state.predIdx];
+    panel(null);
+    pickLocation(s.lat, s.lon, `${SPECIES[state.pred.species].name} spot ${state.predIdx + 1}`);
+  },
+  'go-spots': () => {
+    setTab('map');
+    const c = target();
+    setTimeout(() => {
+      if (c) map.setView([c.lat, c.lon], Math.max(map.getZoom(), 14));
+      toast('Centre one lake on screen, then tap Find spots');
+    }, 100);
+  },
   'pin-cancel': () => clearPending(),
   'pin-forecast': () => {
     if (!pendingLatLng) return;
@@ -755,6 +906,14 @@ const ACTIONS = {
   'import': () => $('#in-import').click(),
 };
 
+document.addEventListener('change', e => {
+  if (e.target.id === 'pred-species') {
+    state.species = e.target.value; store.set('species', state.species);
+    recompute();
+    findSpots();
+  }
+});
+
 document.addEventListener('click', e => {
   const tab = e.target.closest('[data-tab]');
   if (tab) { setTab(tab.dataset.tab); return; }
@@ -768,6 +927,8 @@ async function init() {
     .map(([k, ic, label]) => `<button data-tab="${k}" class="${k === 'forecast' ? 'active' : ''}">${icon(ic)}<span>${label}</span></button>`).join('');
   document.querySelector('[data-action="map-locate"]').innerHTML = icon('nav');
   document.querySelector('[data-action="map-layers"]').innerHTML = icon('layers');
+  document.querySelector('[data-action="map-depth"]').innerHTML = icon('depth');
+  document.querySelector('[data-action="find-spots"]').innerHTML = icon('target') + '<span>Find spots</span>';
 
   $('#in-camera').addEventListener('change', e => onPhotoPicked(e.target));
   $('#in-library').addEventListener('change', e => onPhotoPicked(e.target));

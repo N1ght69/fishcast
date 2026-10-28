@@ -95,7 +95,7 @@ const EVENT_LABEL = { over: 'Moon overhead · major', under: 'Moon underfoot · 
 async function fetchWeather(lat, lon) {
   const p = new URLSearchParams({
     latitude: lat.toFixed(4), longitude: lon.toFixed(4),
-    hourly: 'temperature_2m,surface_pressure,wind_speed_10m,wind_gusts_10m,cloud_cover,precipitation,weather_code',
+    hourly: 'temperature_2m,surface_pressure,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover,precipitation,weather_code',
     past_days: '7', forecast_days: '8', timezone: 'auto', timeformat: 'unixtime',
   });
   const r = await fetch('https://api.open-meteo.com/v1/forecast?' + p);
@@ -109,7 +109,8 @@ function parseWeather(j, lat, lon) {
   const T = fill(h.temperature_2m, 10), P = fill(h.surface_pressure, 1013), W = fill(h.wind_speed_10m, 10),
         G = fill(h.wind_gusts_10m, 15), C = fill(h.cloud_cover, 50), R = fill(h.precipitation, 0);
   const K = h.weather_code.map(v => v ?? 0);
-  const hours = h.time.map((t, i) => ({ t: t * 1000, air: T[i], pres: P[i], wind: W[i], gust: G[i], cloud: C[i] / 100, rain: R[i], code: K[i] }));
+  const D = fill(h.wind_direction_10m || [], 0);
+  const hours = h.time.map((t, i) => ({ t: t * 1000, air: T[i], pres: P[i], wind: W[i], gust: G[i], windDir: D[i] ?? 0, cloud: C[i] / 100, rain: R[i], code: K[i] }));
   if (hours.length < 48) throw new Error('Not enough weather data');
   return { hours, tz: j.timezone || 'UTC', fetched: Date.now(), lat, lon };
 }
@@ -278,4 +279,183 @@ async function catchConditions(lat, lon, t, speciesKey) {
   for (const s of sc) if (!best || Math.abs(s.t - t) < Math.abs(best.t - t)) best = s;
   if (!best || Math.abs(best.t - t) > 1.5 * HOUR) return null;
   return { air: best.w.air, water: best.water, pres: best.w.pres, dp3: best.dp3, wind: best.w.wind, cloud: best.w.cloud, chance: best.chance };
+}
+
+// ---------- Depth (Lithuanian inland-water bathymetry, geoportal.lt, public service) ----------
+// ~300 lakes, ponds, Kaunas & Curonian lagoons and the coast. Elsewhere there is no free depth data.
+const BATHY_URL = 'https://www.geoportal.lt/mapproxy/rest/services/gisc_batimetrija/MapServer';
+const BATHY_BOUNDS = [[53.85, 20.9], [56.5, 26.9]]; // Lithuania
+
+/** Depth-band polygons inside a lon/lat box. Each band's value is its shallow edge in metres. */
+async function fetchDepthPolygons(west, south, east, north) {
+  const q = new URLSearchParams({
+    geometry: [west, south, east, north].map(v => v.toFixed(6)).join(','), geometryType: 'esriGeometryEnvelope',
+    inSR: '4326', outSR: '4326', spatialRel: 'esriSpatialRelIntersects', outFields: 'GYLIS',
+    returnGeometry: 'true', maxAllowableOffset: '0.00004', geometryPrecision: '6', f: 'json',
+  });
+  const r = await fetch(BATHY_URL + '/4/query?' + q);
+  if (!r.ok) throw new Error('Depth service error (' + r.status + ')');
+  const j = await r.json();
+  if (j.error) throw new Error('Depth service error');
+  const bands = (j.features || []).filter(f => f.geometry && f.geometry.rings).map(f => {
+    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+    for (const ring of f.geometry.rings) for (const [x, y] of ring) { if (x < w) w = x; if (x > e) e = x; if (y < s) s = y; if (y > n) n = y; }
+    return { d: +f.attributes.GYLIS, rings: f.geometry.rings, box: [w, s, e, n] };
+  });
+  const levels = [...new Set(bands.map(b => b.d))].sort((a, b) => a - b);
+  return { bands, levels, truncated: !!j.exceededTransferLimit };
+}
+
+function pointInRings(x, y, rings) {
+  let inside = false;
+  for (const r of rings) {
+    for (let i = 0, k = r.length - 1; i < r.length; k = i++) {
+      const xi = r[i][0], yi = r[i][1], xk = r[k][0], yk = r[k][1];
+      if ((yi > y) !== (yk > y) && x < (xk - xi) * (y - yi) / (yk - yi) + xi) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/** Depth at a point from fetched bands: {min, max, est} in metres, or null (land / no data). */
+function depthFromBands(lon, lat, data) {
+  let best = null;
+  for (const b of data.bands) {
+    if (lon < b.box[0] || lon > b.box[2] || lat < b.box[1] || lat > b.box[3]) continue;
+    if (pointInRings(lon, lat, b.rings) && (best === null || b.d > best)) best = b;
+  }
+  if (best === null) return null;
+  const next = data.levels.find(v => v > best.d);
+  const step = next != null ? next - best.d : Math.max(1, best.d * 0.2);
+  return { min: best.d, max: best.d + step, est: best.d + step / 2 };
+}
+
+/** Single-point depth lookup (used for a dropped pin). */
+async function depthAtPoint(lat, lon) {
+  const q = new URLSearchParams({
+    geometry: lon.toFixed(6) + ',' + lat.toFixed(6), geometryType: 'esriGeometryPoint', inSR: '4326',
+    spatialRel: 'esriSpatialRelIntersects', outFields: 'GYLIS', returnGeometry: 'false', f: 'json',
+  });
+  const r = await fetch(BATHY_URL + '/4/query?' + q);
+  const j = await r.json();
+  const vals = (j.features || []).map(f => +f.attributes.GYLIS);
+  return vals.length ? Math.max(...vals) : null;
+}
+
+// ---------- Spot predictor ----------
+// depth = typical feeding depth (m) in comfortable water. drop = love of drop-offs/edges,
+// shore = love of shallow shoreline/weed zone, windward = how much a wind-blown shore helps.
+const SPOT_PREFS = {
+  pike:    { depth: [1.5, 5],  drop: 0.7, shore: 0.6, windward: 0.5 },
+  perch:   { depth: [2, 8],    drop: 0.9, shore: 0.3, windward: 0.6 },
+  zander:  { depth: [4, 12],   drop: 1.0, shore: 0.1, windward: 0.7 },
+  bass:    { depth: [1, 4],    drop: 0.5, shore: 0.8, windward: 0.4 },
+  trout:   { depth: [4, 15],   drop: 0.6, shore: 0.2, windward: 0.3 },
+  carp:    { depth: [1, 3],    drop: 0.2, shore: 0.8, windward: 0.5 },
+  bream:   { depth: [3, 8],    drop: 0.3, shore: 0.2, windward: 0.3 },
+  catfish: { depth: [5, 15],   drop: 0.6, shore: 0.1, windward: 0.2 },
+};
+
+/** Preferred depth range adjusted for water temperature (fish go deeper in cold winter water and in summer heat). */
+function preferredDepth(speciesKey, water) {
+  const s = SPECIES[speciesKey], p = SPOT_PREFS[speciesKey];
+  let [lo, hi] = p.depth;
+  if (water < s.opt[0] - 3) { lo += 2; hi += 3; }                       // cold: deeper, stable water
+  else if (water > s.opt[1] && speciesKey !== 'carp' && speciesKey !== 'bass') { lo += 1.5; hi += 3; } // too warm: cooler depths
+  return [lo, hi];
+}
+
+/**
+ * Score a grid over the given box. ctx: {water, windDir (deg, from), windSpeed (km/h), catches:[{lat,lon,species}]}.
+ * Returns {cells:[{lat,lon,score}], spots:[{lat,lon,score,depth,reasons}], cellM}.
+ */
+function predictSpots(data, box, speciesKey, ctx) {
+  const [west, south, east, north] = box;
+  const p = SPOT_PREFS[speciesKey];
+  const [lo, hi] = preferredDepth(speciesKey, ctx.water);
+  const latMid = (south + north) / 2;
+  const mPerLat = 111320, mPerLon = 111320 * Math.cos(latMid * RAD);
+  const wM = (east - west) * mPerLon, hM = (north - south) * mPerLat;
+  const cellM = Math.max(25, Math.max(wM, hM) / 44);
+  const nx = Math.max(4, Math.round(wM / cellM)), ny = Math.max(4, Math.round(hM / cellM));
+  const dLon = (east - west) / nx, dLat = (north - south) / ny;
+
+  const grid = [];
+  for (let iy = 0; iy < ny; iy++) {
+    const row = [];
+    for (let ix = 0; ix < nx; ix++) {
+      const lon = west + (ix + 0.5) * dLon, lat = south + (iy + 0.5) * dLat;
+      row.push({ lon, lat, depth: depthFromBands(lon, lat, data) });
+    }
+    grid.push(row);
+  }
+
+  // centre of the water area, for windward-shore direction
+  let cx = 0, cy = 0, nWater = 0;
+  for (const row of grid) for (const c of row) if (c.depth) { cx += c.lon; cy += c.lat; nWater++; }
+  if (!nWater) return { cells: [], spots: [], cellM };
+  cx /= nWater; cy /= nWater;
+  const toRad = ((ctx.windDir || 0) + 180) * RAD; // direction the wind blows TOWARD
+  const wx = Math.sin(toRad), wy = Math.cos(toRad);
+  const windStrength = Math.min(1, (ctx.windSpeed || 0) / 20);
+
+  const cells = [];
+  for (let iy = 0; iy < ny; iy++) for (let ix = 0; ix < nx; ix++) {
+    const c = grid[iy][ix];
+    if (!c.depth) continue;
+    const d = c.depth.est;
+    // depth fit
+    const off = d < lo ? lo - d : d > hi ? d - hi : 0;
+    const depthFit = Math.exp(-Math.pow(off / 2.5, 2));
+    // drop-off: biggest depth change to a neighbour within 2 cells, per 100 m
+    let maxDiff = 0, land = 0, around = 0;
+    for (let ky = -2; ky <= 2; ky++) for (let kx = -2; kx <= 2; kx++) {
+      if (!kx && !ky) continue;
+      const r = grid[iy + ky], n = r && r[ix + kx];
+      if (!n) continue;
+      around++;
+      if (!n.depth) { land++; continue; }
+      const dist = Math.hypot(kx, ky) * cellM;
+      maxDiff = Math.max(maxDiff, Math.abs(n.depth.est - d) * 100 / dist);
+    }
+    const drop = Math.min(1, maxDiff / 6);          // 6 m per 100 m = strong drop-off
+    const shore = around ? Math.min(1, land / around * 1.5) : 0;
+    // windward: cells on the side the wind blows toward
+    const vx = (c.lon - cx) * mPerLon, vy = (c.lat - cy) * mPerLat, vl = Math.hypot(vx, vy) || 1;
+    const windward = Math.max(0, (vx * wx + vy * wy) / vl) * windStrength;
+    // your own catches of this species nearby
+    let mine = 0;
+    for (const k of ctx.catches || []) {
+      if (k.species !== speciesKey || k.lat == null) continue;
+      const m = Math.hypot((k.lon - c.lon) * mPerLon, (k.lat - c.lat) * mPerLat);
+      if (m < 200) mine = Math.max(mine, 1 - m / 200);
+    }
+    const score = depthFit * (0.45 + 0.35 * p.drop * drop + 0.25 * p.shore * shore + 0.2 * p.windward * windward) + 0.25 * mine;
+    cells.push({ lat: c.lat, lon: c.lon, score, depth: c.depth, drop, maxDiff, shore, windward, mine, depthFit });
+  }
+
+  const top = Math.max(...cells.map(c => c.score)) || 1;
+  cells.forEach(c => { c.score /= top; });
+
+  // pick up to 6 well-separated best cells
+  const minSep = Math.max(120, cellM * 4);
+  const spots = [];
+  for (const c of [...cells].sort((a, b) => b.score - a.score)) {
+    if (spots.length >= 6 || c.score < 0.55) break;
+    if (spots.some(s => Math.hypot((s.lon - c.lon) * mPerLon, (s.lat - c.lat) * mPerLat) < minSep)) continue;
+    const reasons = [];
+    reasons.push(`${fmtDepth(c.depth)} deep${c.depthFit > 0.9 ? ' – right depth now' : ''}`);
+    if (c.drop > 0.4) reasons.push(`Drop-off: ~${Math.round(c.maxDiff)} m change per 100 m`);
+    if (c.shore > 0.5 && p.shore >= 0.5) reasons.push('Shallow shoreline / weed zone nearby');
+    if (c.windward > 0.4) reasons.push('Wind blows onto this shore – food drifts here');
+    if (c.mine > 0.3) reasons.push('You caught this species here before');
+    spots.push({ lat: c.lat, lon: c.lon, score: c.score, depth: c.depth, reasons });
+  }
+  return { cells, spots, cellM, range: [lo, hi] };
+}
+
+function fmtDepth(d) {
+  if (!d) return '–';
+  const a = Math.round(d.min), b = Math.round(d.max);
+  return a === b ? `~${a} m` : `${a}–${b} m`;
 }

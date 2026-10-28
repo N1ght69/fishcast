@@ -45,6 +45,20 @@ Each hour is scored from six factors, using the selected species' profile (top o
 
 The day score is the average of the 4 best hours. Weather: Open-Meteo (free).
 
+## Depth map and spot finder (Lithuania)
+
+- **Depth layer** (wave button on the Map): depth bands and contour lines for ~300 Lithuanian lakes, ponds, the Kaunas & Curonian lagoons and the coast, from the public bathymetry service on geoportal.lt. Other places have no free depth data, so nothing shows there.
+- **Depth at a pin**: tap the map, and the pin panel shows the depth band at that point.
+- **Find spots**: centre one lake on screen and tap it. The app scores the water on a grid using:
+  - how well the depth matches what the species wants now (deeper when the water is cold or too warm),
+  - drop-offs (how fast the depth changes),
+  - shallow shoreline / weed zone (pike, carp, bass),
+  - the shore the wind is blowing onto,
+  - your own logged catches of that species nearby.
+  The best 6 places get numbered markers; tap one for the reasons, to save it, or to see its bite forecast.
+
+This is a rule-based guess from depth, wind and fish behaviour. It does not know about weed beds, stumps, springs or where fish were caught yesterday. Your own catch log is what makes it better over time.
+
 ### Make it fit your waters
 "Model score when caught" on the Catches tab is your reality check. If you keep catching fish when the model said 30 %, the species numbers are off. Edit the `SPECIES` table at the top of `core.js` (e.g. widen `opt`, lower `press`) and re-upload `core.js`.
 
