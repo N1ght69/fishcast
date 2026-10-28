@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="FishCast">
+<meta name="theme-color" content="#f3f6f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1417" media="(prefers-color-scheme: dark)">
+<title>FishCast</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<style>
+:root {
+  --bg: #f3f6f7; --card: #ffffff; --card2: #eaf0f2; --text: #0f1d22; --muted: #5c6d73; --line: #dfe7ea;
+  --accent: #0e7c86; --accent-soft: #d6eef0; --on-accent: #ffffff;
+  --good: #1f9d55; --ok: #0e7c86; --warn: #d9821a; --bad: #d64545; --catch: #ef7d22;
+  --shadow: 0 1px 2px rgba(15,29,34,.06), 0 4px 16px rgba(15,29,34,.06);
+  --tab-h: 58px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1417; --card: #142128; --card2: #1b2b33; --text: #e7f0f2; --muted: #90a4aa; --line: #22353d;
+    --accent: #3cb6c0; --accent-soft: #163a40; --on-accent: #062226;
+    --good: #45c27a; --ok: #3cb6c0; --warn: #f0a046; --bad: #f06a6a; --catch: #ff9440;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 16px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased; overscroll-behavior: none;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+.ic { width: 20px; height: 20px; flex: none; vertical-align: middle; }
+
+/* ---------- layout ---------- */
+.view { position: fixed; inset: 0 0 calc(var(--tab-h) + env(safe-area-inset-bottom)) 0; overflow-y: auto; -webkit-overflow-scrolling: touch; display: none; }
+.view.active { display: block; }
+.page { padding: calc(env(safe-area-inset-top) + 12px) 16px 24px; max-width: 640px; margin: 0 auto; }
+.title-row { display: flex; align-items: center; gap: 8px; margin: 4px 0 12px; }
+.title-row h1 { font-size: 28px; line-height: 1.1; margin: 0; flex: 1; letter-spacing: -.02em; }
+.icon-btn { width: 40px; height: 40px; border-radius: 12px; border: 0; background: var(--card); color: var(--accent); display: grid; place-items: center; box-shadow: var(--shadow); }
+.icon-btn.on { background: var(--warn); color: #fff; }
+
+.tabbar { position: fixed; left: 0; right: 0; bottom: 0; height: calc(var(--tab-h) + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom);
+  display: flex; background: color-mix(in srgb, var(--card) 88%, transparent); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-top: 1px solid var(--line); z-index: 1000; }
+.tabbar button { flex: 1; border: 0; background: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.tabbar button .ic { width: 24px; height: 24px; }
+.tabbar button.active { color: var(--accent); }
+
+/* ---------- cards ---------- */
+.card { background: var(--card); border-radius: 18px; padding: 16px; margin-bottom: 12px; box-shadow: var(--shadow); }
+.card h2 { font-size: 15px; margin: 0 0 10px; font-weight: 700; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.row { display: flex; align-items: center; gap: 10px; }
+.spacer { flex: 1; }
+.banner { background: var(--accent-soft); color: var(--text); border-radius: 12px; padding: 10px 12px; font-size: 14px; margin-bottom: 12px; }
+
+.chips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 10px; margin: 0 -16px; padding-left: 16px; padding-right: 16px; scrollbar-width: none; }
+.chips::-webkit-scrollbar { display: none; }
+.chip { flex: none; border: 0; border-radius: 999px; padding: 8px 14px; background: var(--card); font-size: 14px; font-weight: 600; box-shadow: var(--shadow); white-space: nowrap; }
+.chip.active { background: var(--accent); color: var(--on-accent); }
+.daychip { flex: none; width: 70px; border: 1.5px solid transparent; border-radius: 14px; padding: 8px 4px; background: var(--card); text-align: center; box-shadow: var(--shadow); }
+.daychip .d { font-size: 12px; color: var(--muted); }
+.daychip .v { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.daychip.active { border-color: var(--accent); background: var(--accent-soft); }
+
+.loc-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px; font-weight: 600; }
+.loc-row .ic { color: var(--accent); width: 18px; height: 18px; }
+.link { border: 0; background: none; color: var(--accent); font-weight: 600; padding: 4px 0; }
+
+.score { display: flex; align-items: center; gap: 18px; }
+.ring-wrap { position: relative; width: 116px; height: 116px; flex: none; }
+.ring-wrap svg { width: 100%; height: 100%; }
+.ring-val { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.ring-val b { font-size: 30px; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.ring-val span { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.score h3 { margin: 0 0 4px; font-size: 20px; }
+
+.windows { display: flex; flex-wrap: wrap; gap: 8px; }
+.window { background: var(--accent-soft); border-radius: 10px; padding: 6px 10px; font-weight: 600; font-variant-numeric: tabular-nums; font-size: 15px; }
+
+.chart { width: 100%; height: auto; display: block; }
+.chart text { font-size: 9px; fill: var(--muted); }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend i { display: inline-block; width: 14px; border-top: 2px dashed var(--warn); vertical-align: middle; margin-right: 4px; }
+.legend i.now { border-top: 2px solid var(--text); opacity: .5; }
+
+.reasons { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.reasons li { display: flex; gap: 10px; font-size: 14px; align-items: flex-start; }
+.dot { width: 18px; height: 18px; border-radius: 50%; flex: none; display: grid; place-items: center; color: #fff; font-size: 13px; font-weight: 800; line-height: 1; margin-top: 1px; }
+.dot.good { background: var(--good); } .dot.bad { background: var(--bad); }
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 14px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+.events { display: grid; gap: 6px; font-size: 14px; margin-top: 8px; }
+.events div { display: flex; gap: 12px; } .events .tm { width: 78px; flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 600; }
+.events .minor { color: var(--muted); }
+
+.empty { text-align: center; padding: 48px 20px; }
+.empty .ic { width: 44px; height: 44px; color: var(--muted); }
+.empty h3 { margin: 12px 0 6px; }
+.btn { border: 0; border-radius: 12px; padding: 11px 16px; font-weight: 600; background: var(--card2); color: var(--text); }
+.btn.primary { background: var(--accent); color: var(--on-accent); }
+.btn.danger { background: transparent; color: var(--bad); }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 14px; }
+
+.spinner { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; margin: 48px auto 10px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- map ---------- */
+#view-map { overflow: hidden; }
+#map { position: absolute; inset: 0; background: var(--card2); }
+.map-tools { position: absolute; top: calc(env(safe-area-inset-top) + 12px); right: 12px; z-index: 500; display: grid; gap: 8px; }
+.map-hint { position: absolute; top: calc(env(safe-area-inset-top) + 12px); left: 12px; z-index: 500; background: var(--card); border-radius: 12px; padding: 8px 12px; font-size: 13px; box-shadow: var(--shadow); max-width: 60%; }
+.map-panel { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 600; background: var(--card); border-radius: 18px; padding: 14px; box-shadow: 0 8px 30px rgba(0,0,0,.2); }
+.map-panel[hidden] { display: none; }
+.map-panel h3 { margin: 0 0 8px; font-size: 17px; }
+.map-panel .btns { display: flex; gap: 8px; margin-top: 10px; }
+.map-panel .btns .btn { flex: 1; padding: 10px 8px; }
+.mk { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: #fff; border: 2.5px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
+.mk .ic { width: 18px; height: 18px; }
+.mk-spot { background: var(--accent); }
+.mk-catch { background: var(--catch); width: 28px; height: 28px; }
+.mk-catch .ic { width: 15px; height: 15px; }
+.mk-new { background: var(--text); }
+.leaflet-container { font: inherit; }
+.leaflet-control-attribution { font-size: 9px; }
+@media (prefers-color-scheme: dark) { .leaflet-control-attribution { background: rgba(20,33,40,.8) !important; color: #90a4aa; } .leaflet-control-attribution a { color: #3cb6c0; } }
+
+/* ---------- catches ---------- */
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; }
+.stats b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stats span { font-size: 11px; color: var(--muted); }
+.list { background: var(--card); border-radius: 18px; overflow: hidden; box-shadow: var(--shadow); }
+.item { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border: 0; background: none; width: 100%; text-align: left; border-bottom: 1px solid var(--line); }
+.item:last-child { border-bottom: 0; }
+.thumb { width: 56px; height: 56px; border-radius: 12px; background: var(--card2); flex: none; overflow: hidden; display: grid; place-items: center; color: var(--accent); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.item .t1 { font-weight: 700; } .item .t2, .item .t3 { font-size: 13px; color: var(--muted); }
+.item .score-pill { margin-left: auto; font-size: 12px; font-weight: 700; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 3px 8px; }
+.section-label { font-size: 13px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; margin: 18px 4px 8px; }
+
+/* ---------- sheets ---------- */
+.backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 2000; display: flex; align-items: flex-end; justify-content: center; animation: fade .15s; }
+.sheet { background: var(--bg); width: 100%; max-width: 640px; max-height: 92%; border-radius: 20px 20px 0 0; overflow-y: auto; padding: 0 16px calc(env(safe-area-inset-bottom) + 20px); animation: up .22s ease-out; }
+.sheet-head { position: sticky; top: 0; background: var(--bg); display: flex; align-items: center; padding: 14px 0 10px; z-index: 1; }
+.sheet-head h2 { flex: 1; text-align: center; margin: 0; font-size: 17px; }
+.sheet-head .link { min-width: 64px; }
+.sheet-head .link:last-child { text-align: right; }
+@keyframes up { from { transform: translateY(40px); opacity: .4; } }
+@keyframes fade { from { opacity: 0; } }
+
+.form { background: var(--card); border-radius: 16px; overflow: hidden; margin-bottom: 14px; box-shadow: var(--shadow); }
+.field { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); min-height: 48px; }
+.field:last-child { border-bottom: 0; }
+.field label { flex: none; width: 110px; font-size: 15px; }
+.field input, .field select, .field textarea { flex: 1; min-width: 0; border: 0; background: none; outline: none; font-size: 16px; text-align: right; }
+.field textarea { text-align: left; resize: none; }
+.field.stack { flex-direction: column; align-items: stretch; }
+.field.stack label { width: auto; }
+.photo-preview { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; border-radius: 16px; margin-bottom: 10px; }
+.photo-btns { display: flex; gap: 8px; margin-bottom: 14px; }
+.photo-btns .btn { flex: 1; display: flex; gap: 6px; align-items: center; justify-content: center; }
+.form-note { font-size: 12px; color: var(--muted); margin: -8px 4px 14px; }
+.detail-photo { width: 100%; border-radius: 16px; display: block; margin-bottom: 12px; }
+.water-val { font-size: 34px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
+.stepper { display: flex; justify-content: center; gap: 16px; align-items: center; margin: 8px 0; }
+.stepper button { width: 48px; height: 48px; border-radius: 50%; border: 0; background: var(--card2); font-size: 24px; font-weight: 700; }
+.switch { appearance: none; -webkit-appearance: none; width: 50px; height: 30px; border-radius: 999px; background: var(--line); position: relative; flex: none !important; transition: background .2s; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .2s; }
+.switch:checked { background: var(--good); }
+.switch:checked::after { transform: translateX(20px); }
+
+.toast { position: fixed; left: 50%; bottom: calc(var(--tab-h) + env(safe-area-inset-bottom) + 16px); transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px; z-index: 3000; max-width: 90%; text-align: center; animation: fade .2s; }
+</style>
+</head>
+<body>
+
+<section id="view-forecast" class="view active" aria-label="Forecast"></section>
+
+<section id="view-map" class="view" aria-label="Map">
+  <div id="map"></div>
+  <div class="map-hint" id="map-hint">Tap the map to drop a pin</div>
+  <div class="map-tools">
+    <button class="icon-btn" data-action="map-locate" aria-label="My location"></button>
+    <button class="icon-btn" data-action="map-layers" aria-label="Satellite"></button>
+  </div>
+  <div class="map-panel" id="map-panel" hidden></div>
+</section>
+
+<section id="view-catches" class="view" aria-label="Catches"></section>
+
+<nav class="tabbar" id="tabbar">
+  <button data-tab="forecast" class="active"></button>
+  <button data-tab="map"></button>
+  <button data-tab="catches"></button>
+</nav>
+
+<input type="file" id="in-camera" accept="image/*" capture="environment" hidden>
+<input type="file" id="in-library" accept="image/*" hidden>
+<input type="file" id="in-import" accept="application/json,.json" hidden>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

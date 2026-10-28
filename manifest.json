@@ -1,0 +1,15 @@
+{
+  "name": "FishCast",
+  "short_name": "FishCast",
+  "description": "Bite forecast, fishing map and catch log",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1417",
+  "theme_color": "#0e7c86",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
