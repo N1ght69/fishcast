@@ -59,6 +59,20 @@ The day score is the average of the 4 best hours. Weather: Open-Meteo (free).
 
 This is a rule-based guess from depth, wind and fish behaviour. It does not know about weed beds, stumps, springs or where fish were caught yesterday. Your own catch log is what makes it better over time.
 
+## Stocked lakes (Lithuania)
+
+Green fish markers on the Map = water bodies with official stocking records (orange = a stocking is planned). Tap one to see:
+- planned stockings (date + species), which anyone can go and watch,
+- stocking history with dates and species,
+- official amounts per year and fish age,
+- "Fish you can expect here": every species ever stocked + species you've logged within 2 km.
+
+Source: Lithuanian Ministry of Environment fish stocking system (zuvys.biip.lt), open data, records from 2019.
+This is not a full species survey: native fish that were never stocked (roach, perch, etc.) don't appear.
+
+## 3-day bite view
+The Forecast tab shows best times and the hour-by-hour chart for 3 days starting from the selected day. Switch to "1 day" for a single-day close-up.
+
 ### Make it fit your waters
 "Model score when caught" on the Catches tab is your reality check. If you keep catching fish when the model said 30 %, the species numbers are off. Edit the `SPECIES` table at the top of `core.js` (e.g. widen `opt`, lower `press`) and re-upload `core.js`.
 

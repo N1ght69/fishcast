@@ -30,6 +30,7 @@ const ICONS = {
   locoff: '<path d="M3 11 21 3l-8 18-2-8-8-2z"/><path d="M2 2l20 20"/>',
   depth: '<path d="M2 7c2.5-2 4.5-2 7 0s4.5 2 7 0 4.5-2 6 0"/><path d="M2 12c2.5-2 4.5-2 7 0s4.5 2 7 0 4.5-2 6 0"/><path d="M12 15v6M9 18l3 3 3-3"/>',
   target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3"/>',
+  stock: '<path d="M2.5 15c2.2-3.4 5.3-5 8.7-5 2.6 0 4.3 1.3 5.4 2.6l2.1-1.9v8.6l-2.1-1.9c-1.1 1.2-2.8 2.6-5.4 2.6-3.4 0-6.5-1.6-8.7-5z"/><path d="M11 1.5v5M8.5 4l2.5 2.5L13.5 4"/>',
 };
 const icon = n => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n]}</svg>`;
 
@@ -88,6 +89,9 @@ const state = {
   catches: [], spots: [],
   satellite: store.get('satellite', false),
   depthOn: store.get('depthOn', true),
+  stockOn: store.get('stockOn', true),
+  chartDays: store.get('chartDays', 3),
+  stockLakes: new Map(), // cadastral id → lake with stocking events
   detailId: null, sheetWater: 12, panelSpot: null,
   pred: null, // last spot prediction
 };
@@ -176,9 +180,9 @@ function ring(v, color) {
   </svg>`;
 }
 
-function chart(day, tz) {
+function chart(hs, events, tz, multiDay) {
   const W = 320, H = 150, pl = 30, pr = 6, pt = 8, pb = 20;
-  const hs = day.hours, t0 = hs[0].t, t1 = hs[hs.length - 1].t;
+  const t0 = hs[0].t, t1 = hs[hs.length - 1].t;
   const X = t => pl + (t - t0) / (t1 - t0) * (W - pl - pr);
   const Y = v => pt + (1 - v) * (H - pt - pb);
   const line = hs.map((h, i) => (i ? 'L' : 'M') + X(h.t).toFixed(1) + ' ' + Y(h.chance).toFixed(1)).join('');
@@ -191,10 +195,17 @@ function chart(day, tz) {
   let xl = '';
   for (const h of hs) {
     const lh = localHour(h.t, tz);
-    if (lh % 6 === 0) xl += `<text x="${X(h.t).toFixed(1)}" y="${H - 5}" text-anchor="middle">${String(lh).padStart(2, '0')}:00</text>`;
+    if (multiDay) {
+      if (lh === 0) {
+        xl += `<line x1="${X(h.t).toFixed(1)}" x2="${X(h.t).toFixed(1)}" y1="${pt}" y2="${Y(0)}" style="stroke:var(--muted);stroke-opacity:.35;stroke-width:1;stroke-dasharray:2 3"/>`;
+      }
+      if (lh === 12) xl += `<text x="${X(h.t).toFixed(1)}" y="${H - 5}" text-anchor="middle">${esc(fmtDay(h.t, tz))}</text>`;
+    } else if (lh % 6 === 0) {
+      xl += `<text x="${X(h.t).toFixed(1)}" y="${H - 5}" text-anchor="middle">${String(lh).padStart(2, '0')}:00</text>`;
+    }
   }
   let majors = '';
-  for (const e of day.events) {
+  for (const e of events) {
     if (isMajor(e) && e.t >= t0 && e.t <= t1) {
       majors += `<line x1="${X(e.t).toFixed(1)}" x2="${X(e.t).toFixed(1)}" y1="${pt}" y2="${Y(0)}" style="stroke:var(--warn);stroke-width:1.5;stroke-dasharray:4 3"/>`;
     }
@@ -265,10 +276,17 @@ function renderForecast() {
         ${nowHour ? `<div class="small">Right now · ${pct(nowHour.chance)}</div>` : ''}
       </div></div>`;
 
-    h += `<div class="card"><h2>Best times</h2><div class="windows">${day.windows.map(w =>
-      `<span class="window">${fmtTime(w.start, tz)} – ${fmtTime(w.end, tz)}</span>`).join('')}</div></div>`;
+    // 3-day (default) or 1-day view starting at the selected day
+    const span = state.chartDays === 1 ? [day] : state.days.slice(state.dayIdx, state.dayIdx + 3);
+    const multi = span.length > 1;
+    const toggle = `<div class="seg"><button class="${multi ? 'active' : ''}" data-action="chart-days" data-n="3">3 days</button><button class="${multi ? '' : 'active'}" data-action="chart-days" data-n="1">1 day</button></div>`;
 
-    h += `<div class="card"><h2>Hour by hour</h2>${chart(day, tz)}
+    h += `<div class="card"><div class="row" style="margin-bottom:10px"><h2 style="margin:0;flex:1">Best times</h2>${toggle}</div>
+      ${span.map(d => `<div class="win-day">${multi ? `<div class="win-label">${d === state.days[0] ? 'Today' : esc(fmtDay(d.start, tz))} · ${pct(d.dayChance)}</div>` : ''}
+        <div class="windows">${d.windows.map(w => `<span class="window">${fmtTime(w.start, tz)} – ${fmtTime(w.end, tz)}</span>`).join('')}</div></div>`).join('')}</div>`;
+
+    const spanHours = span.flatMap(d => d.hours), spanEvents = span.flatMap(d => d.events);
+    h += `<div class="card"><h2>${multi ? `Next ${span.length} days hour by hour` : 'Hour by hour'}</h2>${chart(spanHours, spanEvents, tz, multi)}
       <div class="legend"><span><i></i>Major moon period</span>${isToday ? '<span><i class="now"></i>Now</span>' : ''}</div></div>`;
 
     h += `<div class="card"><h2>Why – at ${fmtTime(day.peak.t, tz)}</h2><ul class="reasons">${reasons(day.peak, state.species).map(r =>
@@ -319,7 +337,7 @@ function pickLocation(lat, lon, name) {
 }
 
 // ---------- map ----------
-let map = null, tiles = {}, spotLayer, catchLayer, predLayer, depthLayer, meMarker = null, pendingMarker = null, pendingLatLng = null;
+let map = null, tiles = {}, spotLayer, catchLayer, predLayer, depthLayer, stockLayer, meMarker = null, pendingMarker = null, pendingLatLng = null;
 
 const divIcon = (cls, ic, size) => L.divIcon({ className: '', html: `<div class="mk ${cls}">${icon(ic)}</div>`, iconSize: [size, size], iconAnchor: [size / 2, size / 2] });
 
@@ -347,6 +365,9 @@ function showMap() {
     depthLayer = new DepthLayer('', { tileSize: 256, opacity: 0.85, minZoom: 9, maxZoom: 19, bounds: BATHY_BOUNDS, attribution: 'Depth © geoportal.lt' });
     if (state.depthOn) depthLayer.addTo(map);
     predLayer = L.layerGroup().addTo(map);
+    stockLayer = L.layerGroup();
+    if (state.stockOn) stockLayer.addTo(map);
+    map.on('moveend', () => { clearTimeout(stockTimer); stockTimer = setTimeout(loadStockings, 400); });
     spotLayer = L.layerGroup().addTo(map);
     catchLayer = L.layerGroup().addTo(map);
     const c = target();
@@ -355,13 +376,115 @@ function showMap() {
     renderMarkers();
     updateMe();
     updateMapTools();
+    setTimeout(loadStockings, 300);
   }
   setTimeout(() => map.invalidateSize(), 60);
 }
 
 function updateMapTools() {
   document.querySelector('[data-action="map-depth"]').classList.toggle('on-accent', state.depthOn);
+  document.querySelector('[data-action="map-stock"]').classList.toggle('on-accent', state.stockOn);
   $('#depth-legend').hidden = !state.depthOn;
+}
+
+// ---------- stocking layer ----------
+let stockTimer = null, stockStats = null, stockStatsPromise = null;
+const stockLoaded = []; // boxes already fetched
+
+async function loadStockings() {
+  if (!map || !state.stockOn || map.getZoom() < 9) return;
+  const b = map.getBounds();
+  const box = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+  const [[s0, w0], [n0, e0]] = BATHY_BOUNDS;
+  if (box[2] < w0 || box[0] > e0 || box[3] < s0 || box[1] > n0) return; // view doesn't touch Lithuania
+  if (stockLoaded.some(x => box[0] >= x[0] && box[1] >= x[1] && box[2] <= x[2] && box[3] <= x[3])) return;
+  // fetch a slightly larger box so small pans don't refetch
+  const padX = (box[2] - box[0]) * 0.25, padY = (box[3] - box[1]) * 0.25;
+  const big = [box[0] - padX, box[1] - padY, box[2] + padX, box[3] + padY];
+  try {
+    const lakes = await fetchStockings(...big);
+    stockLoaded.push(big);
+    for (const [id, l] of lakes) state.stockLakes.set(id, l);
+    renderStockMarkers();
+  } catch { /* offline: keep what we have */ }
+}
+
+function renderStockMarkers() {
+  if (!stockLayer) return;
+  stockLayer.clearLayers();
+  const now = Date.now();
+  for (const l of state.stockLakes.values()) {
+    const planned = l.events.some(e => e.t > now);
+    const last = l.events.find(e => e.t <= now);
+    const yr = last ? "'" + String(new Date(last.t).getFullYear()).slice(2) : 'soon';
+    L.marker([l.lat, l.lon], {
+      icon: L.divIcon({ className: '', html: `<div class="mk mk-stock ${planned ? 'planned' : ''}">${icon('fish')}<span class="mk-badge">${yr}</span></div>`, iconSize: [30, 30], iconAnchor: [15, 15] }),
+      title: l.name,
+    }).on('click', () => openLake(l.id)).addTo(stockLayer);
+  }
+}
+
+function getStockStats() {
+  if (stockStats) return Promise.resolve(stockStats);
+  const cached = store.get('stockStats', null);
+  if (cached && Date.now() - cached.t < 7 * DAY) { stockStats = cached.data; return Promise.resolve(stockStats); }
+  stockStatsPromise = stockStatsPromise || fetchStockingStats().then(d => {
+    stockStats = d; store.set('stockStats', { t: Date.now(), data: d }); return d;
+  }).catch(e => { stockStatsPromise = null; if (cached) { stockStats = cached.data; return stockStats; } throw e; });
+  return stockStatsPromise;
+}
+
+function lakeHtml(l, stats) {
+  const now = Date.now();
+  // older imported records only know the year and are stored as 1 January 00:00 UTC
+  const fmtD = t => {
+    const d = new Date(t);
+    if (d.getUTCMonth() === 0 && d.getUTCDate() === 1 && d.getUTCHours() === 0 && d.getUTCMinutes() === 0) return String(d.getUTCFullYear());
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  };
+  const planned = l.events.filter(e => e.t > now).sort((a, b) => a.t - b.t);
+  const past = l.events.filter(e => e.t <= now);
+  const years = stockingYears(stats && stats[l.id]);
+
+  // species you can expect: everything stocked + your own catches within ~2 km
+  const stocked = new Map();
+  for (const e of l.events) for (const id of e.fish) stocked.set(id, fishName(id));
+  for (const y of years) for (const f of y.fish) stocked.set(f.id, f.name);
+  const mPerLon = 111320 * Math.cos(l.lat * RAD);
+  const mine = new Set(state.catches.filter(c => c.lat != null && Math.hypot((c.lon - l.lon) * mPerLon, (c.lat - l.lat) * 111320) < 2000).map(c => SPECIES[c.species]?.name || c.species));
+
+  const fishList = ids => ids.map(id => esc(fishName(id))).join(', ') || 'species not listed';
+  return `<div class="sheet-head"><button class="link" data-action="close-sheet">Close</button><h2>${esc(l.name)}</h2><span class="link"></span></div>
+    <div class="small muted" style="text-align:center;margin:0 0 12px">${esc([l.category, l.municipality].filter(Boolean).join(' · '))}</div>
+    ${planned.length ? `<div class="card" style="border:2px solid var(--warn)"><h2>Planned stocking</h2>${planned.map(e =>
+      `<div class="stock-row"><b>${fmtD(e.t)}</b><span>${fishList(e.fish)}</span></div>`).join('')}
+      <div class="small muted" style="margin-top:6px">Dates can still change. Anyone can come and watch.</div></div>` : ''}
+    <div class="card"><h2>Fish you can expect here</h2>
+      <div class="tags">${[...stocked.values()].map(n => `<span class="tag">${esc(n)}</span>`).join('') || '<span class="muted small">No stocking recorded</span>'}</div>
+      ${mine.size ? `<div class="small" style="margin-top:8px">You've caught here: <b>${esc([...mine].join(', '))}</b></div>` : ''}
+      <div class="small muted" style="margin-top:8px">Stocked species from official records. This is not a full survey: native fish that were never stocked (roach, perch…) won't appear.</div></div>
+    <div class="card"><h2>Stocking history</h2>
+      ${past.length ? past.slice(0, 12).map(e => `<div class="stock-row"><b>${fmtD(e.t)}</b><span>${fishList(e.fish)}</span></div>`).join('') : '<div class="muted small">No past stockings in the records.</div>'}
+      ${past.length > 12 ? `<div class="small muted">…and ${past.length - 12} earlier</div>` : ''}</div>
+    ${years.length ? `<div class="card"><h2>Amounts per year</h2>${years.map(y => `<div class="year-block"><div class="year">${y.year}</div>${y.fish.map(f =>
+      `<div class="stock-row"><span style="text-align:left">${esc(f.name)}<br><span class="small muted">${esc(f.ages.join(', '))}</span></span><b>${f.count.toLocaleString()}</b></div>`).join('')}</div>`).join('')}</div>`
+      : stats ? '' : '<div class="card"><div class="muted small">Loading yearly amounts…</div></div>'}
+    <div class="btn-row">
+      <button class="btn" data-action="lake-spots" data-id="${l.id}">${icon('target')} Find spots</button>
+      <button class="btn primary" data-action="lake-forecast" data-id="${l.id}">Forecast</button>
+    </div>
+    <p class="small muted" style="text-align:center">Source: Lithuanian Ministry of Environment, zuvys.biip.lt</p>`;
+}
+
+function openLake(id) {
+  const l = state.stockLakes.get(id);
+  if (!l) return;
+  openSheet(lakeHtml(l, stockStats));
+  state.lakeId = id;
+  if (!stockStats) {
+    getStockStats().then(s => { if (state.lakeId === id && $('#sheet')) updateSheet(lakeHtml(l, s)); })
+      .catch(() => { if (state.lakeId === id && $('#sheet')) updateSheet(lakeHtml(l, {})); });
+  }
 }
 
 const compass = deg => ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(((deg % 360) + 360) % 360 / 45) % 8];
@@ -782,13 +905,14 @@ function openSheet(html) {
   b.addEventListener('click', e => { if (e.target === b) closeSheet(); });
   document.body.appendChild(b);
 }
-function closeSheet() { $('#sheet')?.remove(); state.detailId = null; }
+function closeSheet() { $('#sheet')?.remove(); state.detailId = null; state.lakeId = null; }
 function updateSheet(html) { const s = $('#sheet .sheet'); if (s) s.innerHTML = html; }
 
 // ---------- actions ----------
 const ACTIONS = {
   'species': a => { state.species = a.dataset.key; store.set('species', state.species); recompute(); renderForecast(); },
   'day': a => { state.dayIdx = +a.dataset.i; renderForecast(); },
+  'chart-days': a => { state.chartDays = +a.dataset.n; store.set('chartDays', state.chartDays); renderForecast(); },
   'refresh': () => loadForecast(true),
   'locate': async () => { await refreshGps(); loadForecast(); },
   'go-map': () => setTab('map'),
@@ -821,6 +945,25 @@ const ACTIONS = {
     if (state.depthOn && map.getZoom() < 10) toast('Zoom in on a lake to see depths');
   },
   'find-spots': () => findSpots(),
+  'map-stock': () => {
+    state.stockOn = !state.stockOn; store.set('stockOn', state.stockOn);
+    if (state.stockOn) { stockLayer.addTo(map); loadStockings(); if (map.getZoom() < 9) toast('Zoom in to see stocked lakes'); }
+    else stockLayer.remove();
+    updateMapTools();
+  },
+  'lake-forecast': a => {
+    const l = state.stockLakes.get(a.dataset.id);
+    if (!l) return;
+    closeSheet();
+    pickLocation(l.lat, l.lon, l.name);
+  },
+  'lake-spots': a => {
+    const l = state.stockLakes.get(a.dataset.id);
+    if (!l) return;
+    closeSheet();
+    map.setView([l.lat, l.lon], 14);
+    setTimeout(findSpots, 500);
+  },
   'pred-go': a => {
     const i = +a.dataset.i, s = state.pred.res.spots[i];
     map.setView([s.lat, s.lon], Math.max(map.getZoom(), 15));
@@ -928,6 +1071,7 @@ async function init() {
   document.querySelector('[data-action="map-locate"]').innerHTML = icon('nav');
   document.querySelector('[data-action="map-layers"]').innerHTML = icon('layers');
   document.querySelector('[data-action="map-depth"]').innerHTML = icon('depth');
+  document.querySelector('[data-action="map-stock"]').innerHTML = icon('stock');
   document.querySelector('[data-action="find-spots"]').innerHTML = icon('target') + '<span>Find spots</span>';
 
   $('#in-camera').addEventListener('change', e => onPhotoPicked(e.target));

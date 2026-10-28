@@ -1,5 +1,5 @@
 /* FishCast service worker: app works offline; map tiles you've viewed are cached. */
-const CACHE = 'fishcast-v2';
+const CACHE = 'fishcast-v3';
 const TILES = 'fishcast-tiles';
 const MAX_TILES = 3000;
 const SHELL = [

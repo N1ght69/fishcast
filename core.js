@@ -459,3 +459,77 @@ function fmtDepth(d) {
   const a = Math.round(d.min), b = Math.round(d.max);
   return a === b ? `~${a} m` : `${a}–${b} m`;
 }
+
+// ---------- Fish stocking (official, Lithuanian Ministry of Environment – zuvys.biip.lt) ----------
+const STOCKING_WFS = 'https://gis.biip.lt/qgisserver/zuvinimas';
+const STOCKING_STATS = 'https://maps.biip.lt/proxy/zuvinimas/public/uetk/statistics/byYear';
+
+// id: [Lithuanian name, English name, app species key]
+const FISH_TYPES = {
+  1: ['Baltieji amūrai', 'grass carp'], 2: ['Auksiniai karosai', 'golden crucian carp'], 3: ['Lynai', 'tench'],
+  4: ['Sidabriniai karosai', 'gibel carp'], 5: ['Lydekos', 'pike', 'pike'], 6: ['Sykai', 'whitefish'], 7: ['Karpiai', 'carp', 'carp'],
+  8: ['Seliavos', 'vendace'], 9: ['Plačiakakčiai', 'silver carp'], 10: ['Sterkai', 'zander', 'zander'], 11: ['Karšiai', 'bream', 'bream'],
+  12: ['Šamai', 'wels catfish', 'catfish'], 13: ['Vaivorykštiniai upėtakiai', 'rainbow trout', 'trout'], 14: ['Unguriai', 'eel'],
+  15: ['Vėgėlės', 'burbot'], 16: ['Plačiažnypliai vėžiai', 'noble crayfish'], 18: ['Lašišos', 'salmon'], 19: ['Šlakiai', 'sea trout'],
+  20: ['Margieji upėtakiai', 'brown trout', 'trout'], 21: ['Aštriašnipiai eršketai', 'Atlantic sturgeon'], 23: ['Ūsoriai', 'barbel'],
+  24: ['Skersnukiai', 'nase'], 25: ['Plačiakakčiai', 'silver carp'], 26: ['Margieji plačiakakčiai', 'bighead carp'],
+  27: ['Vijūnai', 'weatherfish'], 28: ['Sidabriniai karosai', 'gibel carp'], 29: ['Meknės', 'ide'],
+};
+const FISH_AGES = {
+  1: 'grown-on juveniles', 2: 'summer fry', 3: 'young-of-year', 4: 'larvae', 5: 'yearlings',
+  6: 'two-summer-olds', 7: 'mixed ages', 8: 'three-summer-olds', 9: 'broodstock', 10: 'glass eels',
+};
+const fishName = (id, label) => {
+  const f = FISH_TYPES[id];
+  if (f) return `${f[0]} (${f[1]})`;
+  return label ? label.charAt(0).toUpperCase() + label.slice(1) : 'Fish #' + id;
+};
+
+/** Stocking events inside a lon/lat box, grouped by water body. */
+async function fetchStockings(west, south, east, north) {
+  const q = new URLSearchParams({
+    SERVICE: 'WFS', VERSION: '1.1.0', REQUEST: 'GetFeature', TYPENAME: 'fish_stockings',
+    OUTPUTFORMAT: 'application/json', SRSNAME: 'EPSG:4326', MAXFEATURES: '2000',
+    BBOX: [west, south, east, north].map(v => v.toFixed(5)).join(',') + ',EPSG:4326',
+    PROPERTYNAME: 'id,event_time,location,fish_types,canceled_at,review_time',
+  });
+  const r = await fetch(STOCKING_WFS + '?' + q);
+  if (!r.ok) throw new Error('Stocking service error (' + r.status + ')');
+  const j = await r.json();
+  const lakes = new Map();
+  for (const f of j.features || []) {
+    const p = f.properties || {}, loc = p.location || {};
+    if (p.canceled_at || !loc.cadastral_id || !f.geometry) continue;
+    const id = String(loc.cadastral_id);
+    if (!lakes.has(id)) {
+      lakes.set(id, {
+        id, name: loc.name || 'Water body', category: loc.category || '', municipality: (loc.municipality && loc.municipality.name) || '',
+        lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], events: [],
+      });
+    }
+    const t = Date.parse(p.event_time);
+    const fish = [...new Set(Object.values(p.fish_types || {}).map(Number))];
+    lakes.get(id).events.push({ t, fish, done: !!p.review_time });
+  }
+  for (const l of lakes.values()) l.events.sort((a, b) => b.t - a.t);
+  return lakes;
+}
+
+/** Official yearly totals per water body: {cadastralId: {byYear: {2024: {byFish: {...}}}}}. */
+async function fetchStockingStats() {
+  const r = await fetch(STOCKING_STATS);
+  if (!r.ok) throw new Error('Stocking statistics error (' + r.status + ')');
+  return r.json();
+}
+
+/** Summarise one lake's yearly totals: [{year, fish:[{id, name, count, ages}]}], newest first. */
+function stockingYears(statsForLake) {
+  if (!statsForLake || !statsForLake.byYear) return [];
+  return Object.entries(statsForLake.byYear).map(([year, v]) => ({
+    year: +year,
+    fish: Object.values(v.byFish || {}).map(f => ({
+      id: f.fishType.id, name: fishName(f.fishType.id, f.fishType.label), count: f.count,
+      ages: Object.values(f.byAge || {}).map(a => FISH_AGES[a.fishAge.id] || a.fishAge.label),
+    })).sort((a, b) => b.count - a.count),
+  })).sort((a, b) => b.year - a.year);
+}
