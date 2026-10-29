@@ -70,8 +70,13 @@ Green fish markers on the Map = water bodies with official stocking records (ora
 Source: Lithuanian Ministry of Environment fish stocking system (zuvys.biip.lt), open data, records from 2019.
 This is not a full species survey: native fish that were never stocked (roach, perch, etc.) don't appear.
 
-## 3-day bite view
-The Forecast tab shows best times and the hour-by-hour chart for 3 days starting from the selected day. Switch to "1 day" for a single-day close-up.
+## Forecast tab
+- **Search** (magnifier): find any lake or town, or jump to a saved spot / your GPS position.
+- **Weather / Bite times** switch.
+- A sticky hour timeline covering ~3 days. Swipe sideways and every chart moves with it; tap an hour to select it.
+- **Bite times**: an hourly bar chart for every species (your main species first – tap a name to change it), why the selected hour scores what it does, and the best times for the next 3 days.
+- **Weather**: conditions at the selected hour, then hourly temperature with sky icons, wind, rain, air pressure, and sun & moon position.
+- **ⓘ button**: how the score works, and where to enter a measured water temperature.
 
 ### Make it fit your waters
 "Model score when caught" on the Catches tab is your reality check. If you keep catching fish when the model said 30 %, the species numbers are off. Edit the `SPECIES` table at the top of `core.js` (e.g. widen `opt`, lower `press`) and re-upload `core.js`.

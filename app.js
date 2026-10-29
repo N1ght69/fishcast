@@ -30,6 +30,8 @@ const ICONS = {
   locoff: '<path d="M3 11 21 3l-8 18-2-8-8-2z"/><path d="M2 2l20 20"/>',
   depth: '<path d="M2 7c2.5-2 4.5-2 7 0s4.5 2 7 0 4.5-2 6 0"/><path d="M2 12c2.5-2 4.5-2 7 0s4.5 2 7 0 4.5-2 6 0"/><path d="M12 15v6M9 18l3 3 3-3"/>',
   target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
   stock: '<path d="M2.5 15c2.2-3.4 5.3-5 8.7-5 2.6 0 4.3 1.3 5.4 2.6l2.1-1.9v8.6l-2.1-1.9c-1.1 1.2-2.8 2.6-5.4 2.6-3.4 0-6.5-1.6-8.7-5z"/><path d="M11 1.5v5M8.5 4l2.5 2.5L13.5 4"/>',
 };
 const icon = n => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n]}</svg>`;
@@ -90,7 +92,8 @@ const state = {
   satellite: store.get('satellite', false),
   depthOn: store.get('depthOn', true),
   stockOn: store.get('stockOn', true),
-  chartDays: store.get('chartDays', 3),
+  fcTab: store.get('fcTab', 'bite'),
+  selT: null, scrollX: null, scores: null,
   stockLakes: new Map(), // cadastral id → lake with stocking events
   detailId: null, sheetWater: 12, panelSpot: null,
   pred: null, // last spot prediction
@@ -134,7 +137,7 @@ async function loadForecast(force = false) {
     recompute(); renderForecast(); return;
   }
   state.loading = true; state.error = null;
-  if (state.loadedFor !== key) { state.days = []; state.dayIdx = 0; }
+  if (state.loadedFor !== key) { state.days = []; state.scores = null; state.selT = null; state.scrollX = null; }
   renderForecast();
   try {
     const b = await fetchWeather(c.lat, c.lon);
@@ -164,167 +167,361 @@ function recompute() {
   const b = state.bundle;
   if (!b) return;
   const off = state.waterOverride != null ? state.waterOverride - estimatedWaterNow(b) : 0;
-  const sc = hourScores(b, state.species, state.coord.lat, state.coord.lon, off, state.events);
-  state.days = buildDays(sc, state.events, b.tz);
-  if (state.dayIdx >= state.days.length) state.dayIdx = 0;
+  state.scores = {};
+  for (const k of Object.keys(SPECIES)) {
+    state.scores[k] = hourScores(b, k, state.coord.lat, state.coord.lon, off, state.events);
+  }
+  state.days = buildDays(state.scores[state.species], state.events, b.tz);
 }
 
-const scoreColor = v => v >= 0.7 ? 'var(--good)' : v >= 0.5 ? 'var(--ok)' : v >= 0.3 ? 'var(--warn)' : 'var(--bad)';
-const verdict = v => v >= 0.75 ? 'Excellent – get out there' : v >= 0.55 ? 'Good day' : v >= 0.35 ? 'Fair – fish the best window' : 'Tough conditions';
+const verdict = v => v >= 0.75 ? 'Excellent' : v >= 0.55 ? 'Good' : v >= 0.35 ? 'Fair' : 'Tough';
 
-function ring(v, color) {
-  const r = 47, C = 2 * Math.PI * r;
-  return `<svg viewBox="0 0 116 116" aria-hidden="true">
-    <circle cx="58" cy="58" r="${r}" style="fill:none;stroke:var(--line);stroke-width:11"/>
-    <circle cx="58" cy="58" r="${r}" transform="rotate(-90 58 58)" style="fill:none;stroke:${color};stroke-width:11;stroke-linecap:round;stroke-dasharray:${(C * v).toFixed(1)} ${C.toFixed(1)}"/>
-  </svg>`;
-}
+// ---------- forecast layout ----------
+const HOUR_W = 46, AXIS_W = 44, SPAN_H = 74; // ~3 days of hours
 
-function chart(hs, events, tz, multiDay) {
-  const W = 320, H = 150, pl = 30, pr = 6, pt = 8, pb = 20;
-  const t0 = hs[0].t, t1 = hs[hs.length - 1].t;
-  const X = t => pl + (t - t0) / (t1 - t0) * (W - pl - pr);
-  const Y = v => pt + (1 - v) * (H - pt - pb);
-  const line = hs.map((h, i) => (i ? 'L' : 'M') + X(h.t).toFixed(1) + ' ' + Y(h.chance).toFixed(1)).join('');
-  const area = `${line}L${X(t1).toFixed(1)} ${Y(0)}L${X(t0).toFixed(1)} ${Y(0)}Z`;
-  let grid = '';
-  for (const v of [0, 0.25, 0.5, 0.75, 1]) {
-    grid += `<line x1="${pl}" x2="${W - pr}" y1="${Y(v)}" y2="${Y(v)}" style="stroke:var(--line);stroke-width:1"/>` +
-            `<text x="${pl - 5}" y="${Y(v) + 3}" text-anchor="end">${v * 100}%</text>`;
-  }
-  let xl = '';
-  for (const h of hs) {
-    const lh = localHour(h.t, tz);
-    if (multiDay) {
-      if (lh === 0) {
-        xl += `<line x1="${X(h.t).toFixed(1)}" x2="${X(h.t).toFixed(1)}" y1="${pt}" y2="${Y(0)}" style="stroke:var(--muted);stroke-opacity:.35;stroke-width:1;stroke-dasharray:2 3"/>`;
-      }
-      if (lh === 12) xl += `<text x="${X(h.t).toFixed(1)}" y="${H - 5}" text-anchor="middle">${esc(fmtDay(h.t, tz))}</text>`;
-    } else if (lh % 6 === 0) {
-      xl += `<text x="${X(h.t).toFixed(1)}" y="${H - 5}" text-anchor="middle">${String(lh).padStart(2, '0')}:00</text>`;
-    }
-  }
-  let majors = '';
-  for (const e of events) {
-    if (isMajor(e) && e.t >= t0 && e.t <= t1) {
-      majors += `<line x1="${X(e.t).toFixed(1)}" x2="${X(e.t).toFixed(1)}" y1="${pt}" y2="${Y(0)}" style="stroke:var(--warn);stroke-width:1.5;stroke-dasharray:4 3"/>`;
-    }
-  }
+/** Visible window: from 2 h before now, 74 hours. Returns index range into the score arrays. */
+function forecastWindow() {
+  const sc = (state.scores && state.scores[state.species]) || [];
   const now = Date.now();
-  const nowLine = now >= t0 && now <= t1
-    ? `<line x1="${X(now).toFixed(1)}" x2="${X(now).toFixed(1)}" y1="${pt}" y2="${Y(0)}" style="stroke:var(--text);stroke-opacity:.45;stroke-width:1.5"/>` : '';
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Bite chance by hour">
-    <defs><linearGradient id="ga" x1="0" x2="0" y1="0" y2="1">
-      <stop offset="0" style="stop-color:var(--accent);stop-opacity:.35"/><stop offset="1" style="stop-color:var(--accent);stop-opacity:0"/>
-    </linearGradient></defs>
-    ${grid}${majors}
-    <path d="${area}" style="fill:url(#ga)"/>
-    <path d="${line}" style="fill:none;stroke:var(--accent);stroke-width:2.5;stroke-linejoin:round"/>
-    ${nowLine}${xl}
-  </svg>`;
+  let i0 = sc.findIndex(h => h.t + HOUR > now);
+  if (i0 < 0) i0 = 0;
+  i0 = Math.max(0, i0 - 2);
+  return [i0, Math.min(sc.length, i0 + SPAN_H)];
 }
 
+const FISH_TINT = { pike: '#6f8a3c', perch: '#c3a12c', zander: '#7d8a8c', bass: '#55803f', trout: '#9a6b4a', carp: '#c88c2c', bream: '#9c8a5a', catfish: '#4f5a5e' };
+const fishArt = k => `<svg class="fish-art" viewBox="0 0 120 44" aria-hidden="true">
+  <path d="M6 22c14-15 40-19 64-14 9 2 15 6 20 9l22-11-6 16 6 16-22-11c-5 3-11 7-20 9-24 5-50 1-64-14z" style="fill:${FISH_TINT[k]}"/>
+  <path d="M46 9c6-4 14-5 20-3l-4 6zM50 35l8 5 4-6z" style="fill:${FISH_TINT[k]};opacity:.75"/>
+  <circle cx="20" cy="20" r="2.6" style="fill:#fff"/><circle cx="20" cy="20" r="1.3" style="fill:#111"/>
+  <path d="M30 13c3 5 3 13 0 18" style="fill:none;stroke:rgba(0,0,0,.25);stroke-width:1.5"/></svg>`;
+
+// Weather icons (own drawings)
+function wxIcon(code, isDay) {
+  const sun = '<circle cx="12" cy="12" r="4.5" style="fill:#f5c518"/><g style="stroke:#f5c518;stroke-width:2;stroke-linecap:round"><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></g>';
+  const moon = '<path d="M17 15.5A7 7 0 0 1 9.5 5a7.5 7.5 0 1 0 7.5 10.5z" style="fill:#c9d3e6"/>';
+  const cloud = (dy = 0, fill = 'var(--cloud)') => `<path transform="translate(0 ${dy})" d="M7 19h10a4 4 0 0 0 .6-8A5.5 5.5 0 0 0 7.2 9.6 4.7 4.7 0 0 0 7 19z" style="fill:${fill}"/>`;
+  const drops = '<g style="stroke:#4a90d9;stroke-width:1.8;stroke-linecap:round"><path d="M9 20.5l-1 2.5M13 20.5l-1 2.5M17 20.5l-1 2.5"/></g>';
+  const flakes = '<g style="fill:#9cc3e8"><circle cx="9" cy="22" r="1.2"/><circle cx="13" cy="22.5" r="1.2"/><circle cx="17" cy="22" r="1.2"/></g>';
+  const bolt = '<path d="M13 17l-3 5h3l-1 3 4-6h-3l1-2z" style="fill:#f5c518"/>';
+  let body;
+  if (code <= 1) body = isDay ? sun : moon;
+  else if (code === 2) body = `<g transform="translate(5 -4) scale(.7)">${isDay ? sun : moon}</g>${cloud(1)}`;
+  else if (code === 45 || code === 48) body = `${cloud(-2)}<g style="stroke:var(--cloud);stroke-width:1.8;stroke-linecap:round"><path d="M5 21h14M7 23.5h10"/></g>`;
+  else if (code >= 95) body = `${cloud(-3, 'var(--cloud-dark)')}${bolt}`;
+  else if ((code >= 71 && code <= 77) || code === 85 || code === 86) body = `${cloud(-3)}${flakes}`;
+  else if (code >= 51) body = `${cloud(-3, 'var(--cloud-dark)')}${drops}`;
+  else body = cloud();
+  return `<svg viewBox="0 0 24 26" class="wx">${body}</svg>`;
+}
+
+const windArrow = (fromDeg, size = 22) =>
+  `<svg viewBox="0 0 24 24" width="${size}" height="${size}" style="transform:rotate(${(fromDeg + 180) % 360}deg)" aria-hidden="true"><path d="M12 3v17M6 9l6-6 6 6" style="fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round"/></svg>`;
+
+/** A horizontally scrolling chart row with a fixed y-axis on the left. */
+function row(title, height, axisLabels, svgInner, H, extra = '') {
+  const W = H.length * HOUR_W;
+  const sel = H.findIndex(h => h.t === state.selT);
+  const hl = sel >= 0 ? `<rect x="${sel * HOUR_W}" y="0" width="${HOUR_W}" height="${height}" class="sel-col"/>` : '';
+  const hit = H.map((h, i) => `<rect x="${i * HOUR_W}" y="0" width="${HOUR_W}" height="${height}" class="hit" data-action="sel-hour" data-t="${h.t}"/>`).join('');
+  const axis = axisLabels.map(a => `<span style="top:${a.y}px">${a.label}</span>`).join('');
+  return `<section class="frow">${title ? `<div class="frow-title">${title}</div>` : ''}${extra}
+    <div class="frow-body" style="height:${height}px"><div class="axis">${axis}</div>
+      <div class="hscroll"><svg width="${W}" height="${height}" viewBox="0 0 ${W} ${height}">${hl}${svgInner}${hit}</svg></div></div></section>`;
+}
+
+const gridLines = (W, ys) => ys.map(y => `<line x1="0" x2="${W}" y1="${y}" y2="${y}" class="grid"/>`).join('');
+
+function smoothPath(pts) {
+  if (!pts.length) return '';
+  let d = `M${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 1; i < pts.length; i++) {
+    const [x0, y0] = pts[i - 1], [x1, y1] = pts[i], mx = (x0 + x1) / 2;
+    d += ` C${mx.toFixed(1)} ${y0.toFixed(1)} ${mx.toFixed(1)} ${y1.toFixed(1)} ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+  }
+  return d;
+}
+
+function timelineHtml(H, tz) {
+  const W = H.length * HOUR_W, today = dayKey(Date.now(), tz), tomorrow = dayKey(Date.now() + DAY, tz);
+  let days = '', hours = '';
+  H.forEach((h, i) => {
+    const lh = localHour(h.t, tz), x = i * HOUR_W;
+    if (i === 0 || lh === 0) {
+      const k = dayKey(h.t, tz);
+      const label = k === today ? 'Today' : k === tomorrow ? 'Tomorrow' : fmtDay(h.t, tz);
+      let end = W;
+      for (let j = i + 1; j < H.length; j++) if (localHour(H[j].t, tz) === 0) { end = j * HOUR_W; break; }
+      if (i) days += `<div class="tl-divl" style="left:${x}px"></div>`;
+      days += `<div class="tl-day" data-start="${x}" data-end="${end}" style="left:${x}px">${esc(label)}</div>`;
+    }
+    hours += `<button class="tl-hour ${h.t === state.selT ? 'sel' : ''}" style="left:${x}px;width:${HOUR_W}px" data-action="sel-hour" data-t="${h.t}">${String(lh).padStart(2, '0')}</button>`;
+  });
+  const sel = H.findIndex(h => h.t === state.selT);
+  const dot = sel >= 0 ? `<div class="tl-dot" style="left:${sel * HOUR_W + HOUR_W / 2}px"></div>` : '';
+  return `<div class="tl"><div class="hscroll"><div class="tl-inner" style="width:${W}px">${days}<div class="tl-line"></div>${dot}${hours}</div></div></div>`;
+}
+
+// ---------- bite times tab ----------
+const biteClass = c => c >= 0.7 ? 'b4' : c >= 0.5 ? 'b3' : c >= 0.32 ? 'b2' : 'b1';
+
+function biteRows(i0, i1, H, tz) {
+  const keys = [state.species, ...Object.keys(SPECIES).filter(k => k !== state.species)];
+  return keys.map(k => {
+    const sc = state.scores[k].slice(i0, i1);
+    const height = 104, top = 6;
+    const yMax = Math.min(1, Math.max(0.5, Math.ceil(Math.max(...sc.map(s => s.chance)) * 10) / 10));
+    const Y = v => top + (1 - v / yMax) * (height - top);
+    const W = sc.length * HOUR_W;
+    const bars = sc.map((s, i) => {
+      const y = Y(s.chance);
+      return `<rect x="${i * HOUR_W + 4}" y="${y.toFixed(1)}" width="${HOUR_W - 8}" height="${(height - y).toFixed(1)}" rx="3" class="bar ${biteClass(s.chance)}"/>`;
+    }).join('');
+    const mid = yMax / 2;
+    const axis = [{ y: Y(yMax) - 7, label: Math.round(yMax * 100) + '%' }, { y: Y(mid) - 7, label: Math.round(mid * 100) + '%' }, { y: height - 14, label: '0%' }];
+    const sel = sc.find(s => s.t === state.selT);
+    const head = `<div class="sp-head ${k === state.species ? 'main' : ''}">
+      <button class="sp-name" data-action="species" data-key="${k}">${esc(SPECIES[k].name)}${k === state.species ? ' <span class="star">★</span>' : ''}</button>
+      ${sel ? `<span class="sp-now">${pct(sel.chance)} at ${String(localHour(sel.t, tz)).padStart(2, '0')}:00</span>` : ''}
+      ${fishArt(k)}</div>`;
+    return row('', height, axis, gridLines(W, [Y(yMax), Y(mid)]) + bars, sc, head);
+  }).join('');
+}
+
+function bestTimesCard(tz) {
+  const days = state.days.slice(0, 3);
+  if (!days.length) return '';
+  return `<div class="card"><h2>Best times · ${esc(SPECIES[state.species].name)}</h2>
+    ${days.map((d, i) => `<div class="win-day"><div class="win-label">${i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : esc(fmtDay(d.start, tz))} · ${pct(d.dayChance)} ${verdict(d.dayChance).toLowerCase()}</div>
+      <div class="windows">${d.windows.map(w => `<span class="window">${fmtTime(w.start, tz)} – ${fmtTime(w.end, tz)}</span>`).join('')}</div></div>`).join('')}</div>`;
+}
+
+function whyCard(tz) {
+  const h = state.scores[state.species].find(s => s.t === state.selT);
+  if (!h) return '';
+  return `<div class="card"><h2>Why ${pct(h.chance)} at ${fmtTime(h.t, tz)} · ${esc(SPECIES[state.species].name)}</h2><ul class="reasons">${reasons(h, state.species).map(r =>
+    `<li><span class="dot ${r.good ? 'good' : 'bad'}">${r.good ? '+' : '−'}</span><span>${esc(r.text)}</span></li>`).join('')}</ul></div>`;
+}
+
+// ---------- weather tab ----------
+function pressureGauge(p) {
+  const lo = 980, hi = 1045, v = Math.min(1, Math.max(0, (p - lo) / (hi - lo)));
+  const ang = Math.PI * (1 - v), cx = 24, cy = 24, r = 18;
+  const arc = (a0, a1, col) => {
+    const p0 = [cx + r * Math.cos(Math.PI * (1 - a0)), cy - r * Math.sin(Math.PI * (1 - a0))];
+    const p1 = [cx + r * Math.cos(Math.PI * (1 - a1)), cy - r * Math.sin(Math.PI * (1 - a1))];
+    return `<path d="M${p0[0].toFixed(1)} ${p0[1].toFixed(1)} A${r} ${r} 0 0 1 ${p1[0].toFixed(1)} ${p1[1].toFixed(1)}" style="fill:none;stroke:${col};stroke-width:6"/>`;
+  };
+  return `<svg viewBox="0 0 48 30" width="54" height="34" aria-hidden="true">${arc(0, 0.38, '#6fb7e9')}${arc(0.4, 0.62, '#a6d98a')}${arc(0.64, 1, '#e8665a')}
+    <line x1="${cx}" y1="${cy}" x2="${(cx + (r - 3) * Math.cos(ang)).toFixed(1)}" y2="${(cy - (r - 3) * Math.sin(ang)).toFixed(1)}" style="stroke:var(--text);stroke-width:3;stroke-linecap:round"/><circle cx="${cx}" cy="${cy}" r="2.5" style="fill:var(--text)"/></svg>`;
+}
+
+function weatherNowCard(h, tz) {
+  const w = h.w, day = h.alt > -0.8;
+  return `<div class="now-card">
+    <div class="now-cell">${wxIcon(w.code, day)}<div><b class="big">${Math.round(w.air)}°</b><div class="small muted">Feels like ${Math.round(w.feels ?? w.air)}°</div></div></div>
+    <div class="now-cell"><span class="arrow-bubble">${windArrow(w.windDir ?? 0, 26)}</span><div><b>${Math.round(w.wind)} km/h ${compass(w.windDir ?? 0)}</b><div class="small muted">Gusts ${Math.round(w.gust)} km/h</div></div></div>
+    <div class="now-cell">${pressureGauge(w.pres)}<div><b>${Math.round(w.pres)}</b><div class="small muted">hPa ${h.dp3 > 0.5 ? '↑' : h.dp3 < -0.5 ? '↓' : '→'}</div></div></div>
+  </div>
+  <div class="small muted now-sub">${h.t === state.selT && Math.abs(h.t - Date.now()) < HOUR ? 'Now' : fmtDay(h.t, tz) + ' ' + fmtTime(h.t, tz)} · water ~${h.water.toFixed(1)} °C${state.waterOverride != null ? ' (measured)' : ' (estimated)'} · rain ${h.w.rain.toFixed(1)} mm</div>`;
+}
+
+function weatherRows(H, tz) {
+  const W = H.length * HOUR_W, cx = i => i * HOUR_W + HOUR_W / 2;
+  const out = [];
+
+  // temperature + sky icons
+  {
+    const height = 190, top = 46, bottom = 10;
+    const temps = H.map(h => h.w.air);
+    let lo = Math.floor(Math.min(...temps)) - 2, hi = Math.ceil(Math.max(...temps)) + 2;
+    if (hi - lo < 6) { const m = (hi + lo) / 2; lo = Math.floor(m - 3); hi = Math.ceil(m + 3); }
+    const Y = v => top + (1 - (v - lo) / (hi - lo)) * (height - top - bottom);
+    const step = Math.max(1, Math.round((hi - lo) / 4));
+    const ticks = []; for (let v = lo; v <= hi; v += step) ticks.push(v);
+    const icons = H.map((h, i) => `<g transform="translate(${cx(i) - 13} 6)"><svg width="26" height="28" viewBox="0 0 24 26">${wxIcon(h.w.code, h.alt > -0.8).replace(/^<svg[^>]*>|<\/svg>$/g, '')}</svg></g>`).join('');
+    const line = smoothPath(H.map((h, i) => [cx(i), Y(h.w.air)]));
+    out.push(row('Temperature', height, ticks.map(v => ({ y: Y(v) - 7, label: v + '°' })),
+      gridLines(W, ticks.map(Y)) + icons + `<path d="${line}" class="ln-temp"/>`, H));
+  }
+
+  // wind arrows
+  {
+    const cells = H.map((h, i) => `<div class="wind-cell" style="left:${i * HOUR_W}px;width:${HOUR_W}px">${windArrow(h.w.windDir ?? 0, 18)}<b>${Math.round(h.w.wind)}</b><span>${compass(h.w.windDir ?? 0)}</span></div>`).join('');
+    out.push(`<section class="frow"><div class="frow-title">Wind <span class="muted small">km/h</span></div><div class="frow-body" style="height:64px"><div class="axis"></div>
+      <div class="hscroll"><div class="wind-inner" style="width:${W}px">${cells}</div></div></div></section>`);
+  }
+
+  // rain
+  {
+    const height = 70, maxR = Math.max(2, ...H.map(h => h.w.rain));
+    const Y = v => height - (v / maxR) * (height - 8);
+    const bars = H.map((h, i) => h.w.rain > 0.05 ? `<rect x="${i * HOUR_W + 8}" y="${Y(h.w.rain).toFixed(1)}" width="${HOUR_W - 16}" height="${(height - Y(h.w.rain)).toFixed(1)}" rx="2" class="bar-rain"/>` : '').join('');
+    out.push(row('Rain <span class="muted small">mm/h</span>', height, [{ y: 2, label: maxR.toFixed(0) }, { y: height - 14, label: '0' }],
+      gridLines(W, [8, height - 0.5]) + bars, H));
+  }
+
+  // pressure
+  {
+    const height = 120, top = 10, bottom = 10, ps = H.map(h => h.w.pres);
+    let lo = Math.floor(Math.min(...ps) / 2) * 2 - 2, hi = Math.ceil(Math.max(...ps) / 2) * 2 + 2;
+    if (hi - lo < 8) { const m = (hi + lo) / 2; lo = Math.floor(m - 4); hi = Math.ceil(m + 4); }
+    const Y = v => top + (1 - (v - lo) / (hi - lo)) * (height - top - bottom);
+    const step = Math.max(2, Math.round((hi - lo) / 4 / 2) * 2), ticks = [];
+    for (let v = lo; v <= hi; v += step) ticks.push(v);
+    out.push(row('Air pressure <span class="muted small">hPa</span>', height, ticks.map(v => ({ y: Y(v) - 7, label: v })),
+      gridLines(W, ticks.map(Y)) + `<path d="${smoothPath(H.map((h, i) => [cx(i), Y(h.w.pres)]))}" class="ln-pres"/>`, H));
+  }
+
+  // sun and moon
+  {
+    const height = 150, mid = 78, k = 1.1; // px per degree
+    const Y = deg => mid - deg * k * 0.95;
+    const lat = state.coord.lat, lon = state.coord.lon;
+    const sunPts = [], moonPts = [];
+    for (let i = 0; i <= H.length * 4; i++) {
+      const t = H[0].t + i * HOUR / 4, x = (i / 4) * HOUR_W + HOUR_W / 2;
+      sunPts.push([x, Math.max(4, Math.min(height - 4, Y(sunAltitude(t, lat, lon))))]);
+      moonPts.push([x, Math.max(4, Math.min(height - 4, Y(moonState(t, lat, lon).alt / RAD)))]);
+    }
+    const si = Math.max(0, H.findIndex(h => h.t === state.selT));
+    const sx = cx(si), st = H[si].t;
+    const sy = Math.max(10, Math.min(height - 10, Y(sunAltitude(st, lat, lon))));
+    const my = Math.max(10, Math.min(height - 10, Y(moonState(st, lat, lon).alt / RAD)));
+    const illum = moonIllumination(st), waxing = moonAge(st) < 14.77;
+    const moonIcon = `<circle cx="${sx}" cy="${my}" r="9" style="fill:#2b2f36"/><path d="M${sx} ${my - 9} A9 9 0 0 ${waxing ? 1 : 0} ${sx} ${my + 9} A${(9 * Math.abs(1 - 2 * illum)).toFixed(1)} 9 0 0 ${illum > 0.5 === waxing ? 1 : 0} ${sx} ${my - 9}z" style="fill:#f1f1ea"/><circle cx="${sx}" cy="${my}" r="9" style="fill:none;stroke:var(--line);stroke-width:1"/>`;
+    const inner = `<line x1="0" x2="${W}" y1="${mid}" y2="${mid}" class="horizon"/>
+      <polyline points="${moonPts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ')}" class="ln-moon"/><polyline points="${sunPts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ')}" class="ln-sun"/>
+      ${moonIcon}<circle cx="${sx}" cy="${sy}" r="11" class="sun-dot"/>`;
+    out.push(row('Sun and moon', height, [{ y: mid - 18, label: 'up' }, { y: mid + 4, label: 'down' }], inner, H,
+      `<div class="small muted frow-sub">${moonPhaseName(st)} · ${pct(illum)} lit</div>`));
+  }
+  return out.join('');
+}
+
+// ---------- render ----------
 function renderForecast() {
   const el = $('#view-forecast');
-  const scrolls = [...el.querySelectorAll('.chips')].map(c => c.scrollLeft);
-  const c = target(), tz = state.bundle?.tz, day = state.days[state.dayIdx];
-  const sp = SPECIES[state.species];
+  const c = target(), tz = state.bundle?.tz;
+  const name = state.picked ? state.picked.name : 'Current location';
+  const coords = c ? `${c.lat.toFixed(4)}° N, ${c.lon.toFixed(4)}° E` : 'Location not set';
 
-  let h = `<div class="page">
-    <div class="title-row"><h1>Bite forecast</h1>
-      <button class="icon-btn ${state.waterOverride != null ? 'on' : ''}" data-action="water" aria-label="Water temperature">${icon('thermo')}</button>
-      <button class="icon-btn" data-action="refresh" aria-label="Refresh">${icon('refresh')}</button>
+  let head = `<div class="fc-head">
+      <button class="round-btn" data-action="search" aria-label="Search places">${icon('search')}</button>
+      <div class="fc-title"><b>${esc(name)}</b><span>${coords}</span></div>
+      <button class="round-btn" data-action="info" aria-label="About the forecast">${icon('info')}</button>
     </div>
-    <div class="loc-row">${icon(state.picked ? 'pin' : 'nav')}
-      <span>${state.picked ? esc(state.picked.name) : 'My location'}</span>
-      ${state.waterOverride != null ? `<span class="muted small">· water ${state.waterOverride.toFixed(1)}°C measured</span>` : ''}
-      <span class="spacer"></span>
-      ${state.picked ? '<button class="link" data-action="use-gps">Use GPS</button>' : ''}
-    </div>
-    <div class="chips">${Object.entries(SPECIES).map(([k, s]) =>
-      `<button class="chip ${k === state.species ? 'active' : ''}" data-action="species" data-key="${k}">${esc(s.name)}</button>`).join('')}</div>`;
+    <div class="seg2"><button class="${state.fcTab === 'weather' ? 'active' : ''}" data-action="fc-tab" data-v="weather">Weather</button><button class="${state.fcTab === 'bite' ? 'active' : ''}" data-action="fc-tab" data-v="bite">Bite times</button></div>`;
 
+  let body = '';
+  const ready = c && state.scores && state.scores[state.species] && state.scores[state.species].length;
   if (!c) {
-    if (state.locating) {
-      h += '<div class="spinner"></div><p class="muted" style="text-align:center">Finding your location…</p>';
-    } else {
-      h += `<div class="empty">${icon('locoff')}<h3>Location needed</h3>
-        <p class="muted">${esc(state.gpsError || 'Allow location access, or pick a spot on the map.')}</p>
-        <div class="btn-row"><button class="btn primary" data-action="locate">Try again</button><button class="btn" data-action="go-map">Pick on map</button></div></div>`;
-    }
-  } else if (!day) {
-    if (state.error && !state.loading) {
-      h += `<div class="empty">${icon('refresh')}<h3>Couldn't load the forecast</h3><p class="muted">${esc(state.error)}</p>
-        <div class="btn-row"><button class="btn primary" data-action="refresh">Retry</button></div></div>`;
-    } else {
-      h += '<div class="spinner"></div><p class="muted" style="text-align:center">Loading weather…</p>';
-    }
+    body = state.locating ? '<div class="spinner"></div><p class="muted" style="text-align:center">Finding your location…</p>'
+      : `<div class="empty">${icon('locoff')}<h3>Location needed</h3><p class="muted">${esc(state.gpsError || 'Allow location access, search a place, or pick a spot on the map.')}</p>
+        <div class="btn-row"><button class="btn primary" data-action="locate">Try again</button><button class="btn" data-action="search">Search</button></div></div>`;
+  } else if (!ready) {
+    body = state.error && !state.loading
+      ? `<div class="empty">${icon('refresh')}<h3>Couldn't load the forecast</h3><p class="muted">${esc(state.error)}</p><div class="btn-row"><button class="btn primary" data-action="refresh">Retry</button></div></div>`
+      : '<div class="spinner"></div><p class="muted" style="text-align:center">Loading weather…</p>';
   } else {
-    const isToday = state.dayIdx === 0;
-    const now = Date.now();
-    const nowHour = isToday ? day.hours.find(x => x.t <= now && now < x.t + HOUR) : null;
-    if (state.error) h += `<div class="banner">${esc(state.error)}</div>`;
-
-    h += `<div class="chips">${state.days.map((d, i) =>
-      `<button class="daychip ${i === state.dayIdx ? 'active' : ''}" data-action="day" data-i="${i}">
-        <div class="d">${i === 0 ? 'Today' : esc(fmtDay(d.start, tz))}</div><div class="v">${pct(d.dayChance)}</div></button>`).join('')}</div>`;
-
-    h += `<div class="card score">
-      <div class="ring-wrap">${ring(day.dayChance, scoreColor(day.dayChance))}<div class="ring-val"><b>${pct(day.dayChance)}</b><span>bite chance</span></div></div>
-      <div><h3>${esc(sp.name)}</h3><div class="muted">${verdict(day.dayChance)}</div>
-        <div class="small" style="margin-top:8px">Peak <b>${fmtTime(day.peak.t, tz)}</b> · ${pct(day.peak.chance)}</div>
-        ${nowHour ? `<div class="small">Right now · ${pct(nowHour.chance)}</div>` : ''}
-      </div></div>`;
-
-    // 3-day (default) or 1-day view starting at the selected day
-    const span = state.chartDays === 1 ? [day] : state.days.slice(state.dayIdx, state.dayIdx + 3);
-    const multi = span.length > 1;
-    const toggle = `<div class="seg"><button class="${multi ? 'active' : ''}" data-action="chart-days" data-n="3">3 days</button><button class="${multi ? '' : 'active'}" data-action="chart-days" data-n="1">1 day</button></div>`;
-
-    h += `<div class="card"><div class="row" style="margin-bottom:10px"><h2 style="margin:0;flex:1">Best times</h2>${toggle}</div>
-      ${span.map(d => `<div class="win-day">${multi ? `<div class="win-label">${d === state.days[0] ? 'Today' : esc(fmtDay(d.start, tz))} · ${pct(d.dayChance)}</div>` : ''}
-        <div class="windows">${d.windows.map(w => `<span class="window">${fmtTime(w.start, tz)} – ${fmtTime(w.end, tz)}</span>`).join('')}</div></div>`).join('')}</div>`;
-
-    const spanHours = span.flatMap(d => d.hours), spanEvents = span.flatMap(d => d.events);
-    h += `<div class="card"><h2>${multi ? `Next ${span.length} days hour by hour` : 'Hour by hour'}</h2>${chart(spanHours, spanEvents, tz, multi)}
-      <div class="legend"><span><i></i>Major moon period</span>${isToday ? '<span><i class="now"></i>Now</span>' : ''}</div></div>`;
-
-    h += `<div class="card"><h2>Why – at ${fmtTime(day.peak.t, tz)}</h2><ul class="reasons">${reasons(day.peak, state.species).map(r =>
-      `<li><span class="dot ${r.good ? 'good' : 'bad'}">${r.good ? '+' : '−'}</span><span>${esc(r.text)}</span></li>`).join('')}</ul></div>`;
-
-    h += `<div class="card"><h2>Moon</h2><div class="row small">${icon('moon')}<span>${day.phase} · ${pct(day.illum)} lit</span></div>
-      <div class="events">${day.events.map(e =>
-        `<div class="${isMajor(e) ? '' : 'minor'}"><span class="tm">${fmtTime(e.t, tz)}</span><span>${EVENT_LABEL[e.kind]}</span></div>`).join('') || '<div class="muted">No moon events</div>'}</div></div>`;
-
-    const p = day.peak, arrow = p.dp3 > 0.5 ? '↑' : p.dp3 < -0.5 ? '↓' : '→';
-    h += `<div class="card"><h2>Conditions at ${fmtTime(p.t, tz)}</h2><dl class="kv">
-      <dt>Air</dt><dd>${Math.round(p.w.air)} °C</dd>
-      <dt>Water ${state.waterOverride != null ? '(measured)' : '(estimated)'}</dt><dd>${p.water.toFixed(1)} °C</dd>
-      <dt>Pressure</dt><dd>${Math.round(p.w.pres)} hPa ${arrow} ${p.dp3 >= 0 ? '+' : ''}${p.dp3.toFixed(1)} in 3 h</dd>
-      <dt>Wind</dt><dd>${Math.round(p.w.wind)} km/h, gusts ${Math.round(p.w.gust)}</dd>
-      <dt>Clouds</dt><dd>${pct(p.w.cloud)}</dd>
-      <dt>Rain</dt><dd>${p.w.rain.toFixed(1)} mm/h</dd></dl></div>`;
-
-    h += `<div class="card row"><div style="flex:1"><h2 style="margin:0 0 2px">Where to fish</h2><div class="small muted">Best spots on a lake for ${esc(sp.name.toLowerCase())} from depth, drop-offs and wind</div></div>
-      <button class="btn primary" data-action="go-spots">Map</button></div>`;
-
-    h += `<p class="small muted">Bite chance is a science-based estimate from water temperature, light, pressure trend, wind, rain and moon periods. It is not a count of real catches. Weather: Open-Meteo.</p>`;
+    const [i0, i1] = forecastWindow();
+    const H = state.scores[state.species].slice(i0, i1);
+    if (!H.some(h => h.t === state.selT)) {
+      const now = Date.now();
+      state.selT = (H.find(h => h.t <= now && now < h.t + HOUR) || H[0]).t;
+    }
+    head += timelineHtml(H, tz);
+    const selH = H.find(h => h.t === state.selT);
+    if (state.error) body += `<div class="banner" style="margin:10px 16px 0">${esc(state.error)}</div>`;
+    if (state.fcTab === 'weather') {
+      body += `<div class="pad">${weatherNowCard(selH, tz)}</div>` + weatherRows(H, tz) +
+        `<p class="small muted pad">Weather: Open-Meteo. Tap any hour to see its details.</p>`;
+    } else {
+      body += `<p class="small muted pad" style="margin-top:12px">Bite chance per hour from water temperature, light, pressure trend, wind, rain and moon periods. Tap a fish name to make it your main species.</p>` +
+        biteRows(i0, i1, H, tz) +
+        `<div class="pad">${whyCard(tz)}${bestTimesCard(tz)}
+          <div class="card row"><div style="flex:1"><h2 style="margin:0 0 2px">Where to fish</h2><div class="small muted">Best spots on a lake for ${esc(SPECIES[state.species].name.toLowerCase())} from depth, drop-offs and wind</div></div>
+          <button class="btn primary" data-action="go-spots">Map</button></div>
+          <p class="small muted">A science-based estimate, not a count of real catches.</p></div>`;
+    }
   }
-  h += '</div>';
-  el.innerHTML = h;
-  el.querySelectorAll('.chips').forEach((c2, i) => { if (scrolls[i]) c2.scrollLeft = scrolls[i]; });
+
+  el.innerHTML = `<div class="fc"><div class="fc-sticky">${head}</div>${body}</div>`;
+  syncScroll(el);
 }
 
-function openWaterSheet() {
+function syncScroll(root) {
+  const els = [...root.querySelectorAll('.hscroll')];
+  if (!els.length) return;
+  const sel = state.scores && state.scores[state.species] ? (() => {
+    const [i0, i1] = forecastWindow();
+    return state.scores[state.species].slice(i0, i1).findIndex(h => h.t === state.selT);
+  })() : 0;
+  if (state.scrollX == null) state.scrollX = Math.max(0, (sel - 1) * HOUR_W);
+  // keep each day's label visible at the left edge while its hours are on screen
+  const labels = [...root.querySelectorAll('.tl-day')];
+  const pin = x => {
+    for (const l of labels) {
+      const start = +l.dataset.start, end = +l.dataset.end, w = l.offsetWidth;
+      l.style.left = Math.max(start, Math.min(x, end - w - 10)) + 'px';
+    }
+  };
+  let lock = false;
+  pin(state.scrollX);
+  for (const e of els) {
+    e.addEventListener('scroll', () => pin(e.scrollLeft), { passive: true });
+    e.scrollLeft = state.scrollX;
+    e.addEventListener('scroll', () => {
+      if (lock) return;
+      lock = true;
+      state.scrollX = e.scrollLeft;
+      for (const o of els) if (o !== e) o.scrollLeft = e.scrollLeft;
+      requestAnimationFrame(() => { lock = false; });
+    }, { passive: true });
+  }
+}
+
+// ---------- info & search sheets ----------
+function openInfoSheet() {
   const est = state.bundle ? estimatedWaterNow(state.bundle) : null;
   state.sheetWater = state.waterOverride ?? (est != null ? Math.round(est * 2) / 2 : 12);
-  openSheet(`<div class="sheet-head"><button class="link" data-action="close-sheet">Cancel</button><h2>Water temperature</h2><button class="link" data-action="water-save">Use</button></div>
-    <div class="card"><div class="muted small">Estimated now</div>
-      <div style="font-size:22px;font-weight:700">${est != null ? est.toFixed(1) + ' °C' : '–'}</div>
-      <p class="small muted" style="margin-bottom:0">No weather service measures lake temperature, so it's estimated from the last 5 days of air temperature. A thermometer reading is more accurate, and water temperature is the biggest input to the score.</p></div>
-    <div class="card"><div class="muted small" style="text-align:center">Your measurement</div>
-      <div class="stepper"><button data-action="water-minus" aria-label="Lower">−</button><div class="water-val" id="wv">${state.sheetWater.toFixed(1)} °C</div><button data-action="water-plus" aria-label="Higher">+</button></div></div>
-    ${state.waterOverride != null ? '<div class="btn-row"><button class="btn danger" data-action="water-clear">Go back to the estimate</button></div>' : ''}`);
+  openSheet(`<div class="sheet-head"><span class="link"></span><h2>About the forecast</h2><button class="link" data-action="close-sheet">Done</button></div>
+    <div class="card"><h2>How bite chance works</h2>
+      <p class="small" style="margin:0">Each hour is scored per species from water temperature (biggest factor), light and dawn/dusk, the 3-hour pressure trend, wind, rain/storms and moon periods. It's a science-based estimate, not a count of real catches – compare it with your own catch log.</p></div>
+    <div class="card"><h2>Water temperature</h2>
+      <div class="small muted">Estimated now: <b>${est != null ? est.toFixed(1) + ' °C' : '–'}</b> (from the last 5 days of air temperature)</div>
+      <div class="stepper"><button data-action="water-minus" aria-label="Lower">−</button><div class="water-val" id="wv">${state.sheetWater.toFixed(1)} °C</div><button data-action="water-plus" aria-label="Higher">+</button></div>
+      <div class="btn-row" style="margin-top:4px"><button class="btn primary" data-action="water-save">Use my measurement</button>${state.waterOverride != null ? '<button class="btn danger" data-action="water-clear">Use estimate</button>' : ''}</div></div>`);
+}
+
+let searchTimer = null;
+function openSearchSheet() {
+  openSheet(`<div class="sheet-head"><span class="link"></span><h2>Search</h2><button class="link" data-action="close-sheet">Cancel</button></div>
+    <input id="place-q" class="search-input" placeholder="Lake, town or place" autocomplete="off" enterkeyhint="search">
+    <div class="list" style="margin-top:10px"><button class="item" data-action="use-gps-close">${icon('nav')}<div><div class="t1">Current location</div><div class="t3">Use GPS</div></div></button>
+      ${state.spots.map(s => `<button class="item" data-action="pick-spot" data-id="${s.id}">${icon('pin')}<div><div class="t1">${esc(s.name)}</div><div class="t3">Saved spot</div></div></button>`).join('')}</div>
+    <div id="place-results" class="list" style="margin-top:10px" hidden></div>`);
+  const inp = $('#place-q');
+  setTimeout(() => inp.focus(), 50);
+  inp.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => searchPlaces(inp.value), 350); });
+}
+
+async function searchPlaces(q) {
+  const box = $('#place-results');
+  if (!box) return;
+  if (q.trim().length < 2) { box.hidden = true; return; }
+  try {
+    const r = await fetch('https://geocoding-api.open-meteo.com/v1/search?' + new URLSearchParams({ name: q.trim(), count: '10', language: 'en', format: 'json' }));
+    const j = await r.json();
+    const res = j.results || [];
+    state.placeResults = res;
+    box.hidden = false;
+    box.innerHTML = res.length ? res.map((p, i) => `<button class="item" data-action="pick-place" data-i="${i}">${icon('pin')}<div><div class="t1">${esc(p.name)}</div><div class="t3">${esc([p.admin2, p.admin1, p.country].filter(Boolean).join(', '))}</div></div></button>`).join('')
+      : '<div class="item muted">No places found</div>';
+  } catch {
+    box.hidden = false;
+    box.innerHTML = '<div class="item muted">Search needs internet</div>';
+  }
 }
 
 function pickLocation(lat, lon, name) {
@@ -912,7 +1109,13 @@ function updateSheet(html) { const s = $('#sheet .sheet'); if (s) s.innerHTML = 
 const ACTIONS = {
   'species': a => { state.species = a.dataset.key; store.set('species', state.species); recompute(); renderForecast(); },
   'day': a => { state.dayIdx = +a.dataset.i; renderForecast(); },
-  'chart-days': a => { state.chartDays = +a.dataset.n; store.set('chartDays', state.chartDays); renderForecast(); },
+  'fc-tab': a => { state.fcTab = a.dataset.v; store.set('fcTab', state.fcTab); renderForecast(); },
+  'sel-hour': a => { state.selT = +a.dataset.t; renderForecast(); },
+  'info': () => openInfoSheet(),
+  'search': () => openSearchSheet(),
+  'use-gps-close': async () => { closeSheet(); state.picked = null; store.set('picked', null); state.waterOverride = null; if (!state.gps) await refreshGps(); loadForecast(); },
+  'pick-spot': a => { const s = state.spots.find(x => x.id === a.dataset.id); if (!s) return; closeSheet(); pickLocation(s.lat, s.lon, s.name); },
+  'pick-place': a => { const p = (state.placeResults || [])[+a.dataset.i]; if (!p) return; closeSheet(); pickLocation(p.latitude, p.longitude, p.name); },
   'refresh': () => loadForecast(true),
   'locate': async () => { await refreshGps(); loadForecast(); },
   'go-map': () => setTab('map'),
@@ -921,7 +1124,7 @@ const ACTIONS = {
     if (!state.gps) await refreshGps();
     loadForecast();
   },
-  'water': () => openWaterSheet(),
+  'water': () => openInfoSheet(),
   'water-minus': () => { state.sheetWater = Math.max(0, state.sheetWater - 0.5); $('#wv').textContent = state.sheetWater.toFixed(1) + ' °C'; },
   'water-plus': () => { state.sheetWater = Math.min(35, state.sheetWater + 0.5); $('#wv').textContent = state.sheetWater.toFixed(1) + ' °C'; },
   'water-save': () => { state.waterOverride = state.sheetWater; closeSheet(); recompute(); renderForecast(); },

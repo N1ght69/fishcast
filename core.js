@@ -95,7 +95,7 @@ const EVENT_LABEL = { over: 'Moon overhead · major', under: 'Moon underfoot · 
 async function fetchWeather(lat, lon) {
   const p = new URLSearchParams({
     latitude: lat.toFixed(4), longitude: lon.toFixed(4),
-    hourly: 'temperature_2m,surface_pressure,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover,precipitation,weather_code',
+    hourly: 'temperature_2m,apparent_temperature,surface_pressure,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover,precipitation,weather_code',
     past_days: '7', forecast_days: '8', timezone: 'auto', timeformat: 'unixtime',
   });
   const r = await fetch('https://api.open-meteo.com/v1/forecast?' + p);
@@ -110,7 +110,8 @@ function parseWeather(j, lat, lon) {
         G = fill(h.wind_gusts_10m, 15), C = fill(h.cloud_cover, 50), R = fill(h.precipitation, 0);
   const K = h.weather_code.map(v => v ?? 0);
   const D = fill(h.wind_direction_10m || [], 0);
-  const hours = h.time.map((t, i) => ({ t: t * 1000, air: T[i], pres: P[i], wind: W[i], gust: G[i], windDir: D[i] ?? 0, cloud: C[i] / 100, rain: R[i], code: K[i] }));
+  const A = h.apparent_temperature ? fill(h.apparent_temperature, 10) : T;
+  const hours = h.time.map((t, i) => ({ t: t * 1000, air: T[i], pres: P[i], wind: W[i], gust: G[i], windDir: D[i] ?? 0, feels: A[i], cloud: C[i] / 100, rain: R[i], code: K[i] }));
   if (hours.length < 48) throw new Error('Not enough weather data');
   return { hours, tz: j.timezone || 'UTC', fetched: Date.now(), lat, lon };
 }
